@@ -1,0 +1,17 @@
+.DS_Store
+*.log
+*.sql
+*.dump
+*.sqlite
+
+backend/.env
+backend/vendor/
+backend/node_modules/
+backend/storage/logs/
+backend/storage/framework/cache/
+backend/storage/framework/sessions/
+backend/storage/framework/views/
+
+frontend/.env
+frontend/node_modules/
+frontend/dist/
