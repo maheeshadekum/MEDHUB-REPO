@@ -11,7 +11,14 @@ export const authServices = {
 
     const { data } = await api.post("/login", { email, password, rememberMe });
 
-    return data;
+if (data?.token) {
+  Cookies.set("auth_token", data.token, {
+    expires: rememberMe ? 30 : 1,
+    sameSite: "lax",
+  });
+}
+
+return data;
   },
 
   // The register method is now async and returns a User object
