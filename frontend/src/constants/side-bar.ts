@@ -120,7 +120,8 @@ export const sidebarData = {
       url: "/clinics",
       icon: FaHospitalAlt,
       isActive: false,
-      permissions: [permissions.manageHospitals],
+      permissions: [permissions.manageClinic],
+      roles: ["super_admin", "hospital_admin"],
     },
     {
       title: "Clinic Patients",
@@ -138,6 +139,7 @@ export const sidebarData = {
       icon: CalendarRange,
       isActive: false,
       permissions: [permissions.manageHospitals],
+      roles: ["super_admin", "hospital_admin"],
     },
     {
       title: "OPD Dates",
@@ -145,6 +147,7 @@ export const sidebarData = {
       icon: Calendar1Icon,
       isActive: false,
       permissions: [permissions.manageHospitals],
+      roles: ["super_admin", "hospital_admin"],
     },
     {
       title: "Settings",
@@ -152,6 +155,7 @@ export const sidebarData = {
       icon: Settings,
       isActive: false,
       permissions: [permissions.manageHospitals],
+      roles: ["super_admin", "hospital_admin"],
     },
     {
       title: "Back to Home",

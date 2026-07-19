@@ -67,6 +67,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // hospital routes
     Route::post('/hospitals', [HospitalController::class, 'storeHospital'])->middleware(PermissionMiddleware::class . ':create_hospitals');
     Route::post('/hospitals/manage', [HospitalController::class, 'manageHospital'])->middleware(PermissionMiddleware::class . ':manage_hospitals');
+    Route::put('/hospitals/{hospital}/settings', [HospitalController::class, 'updateHospitalSettings'])->middleware(PermissionMiddleware::class . ':manage_hospitals');
     Route::put('/hospitals/{hospital}', [HospitalController::class, 'updateHospital'])->middleware(PermissionMiddleware::class . ':update_hospitals');
 
     // users routes

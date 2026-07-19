@@ -7,7 +7,6 @@ use App\Models\Hospital;
 use Exception;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\ValidationException;
 
 class OpdDateController extends Controller
 {
@@ -67,53 +66,56 @@ class OpdDateController extends Controller
      */
     public function store(Request $request)
     {
-        DB::beginTransaction();
+        $user = $request->user();
+        $role = $user->role?->name;
+
+        if (!in_array($role, ['super_admin', 'hospital_admin'], true)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($role === 'hospital_admin' && !$user->hospital_id) {
+            return response()->json([
+                'message' => 'No hospital is assigned to your account'
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'hospital_id' => 'required|exists:hospitals,id',
+            'date' => 'required|date|after_or_equal:today',
+            'start_time' => 'required|date_format:H:i',
+            'end_time' => 'required|date_format:H:i|after:start_time',
+            'status' => 'in:scheduled,completed,cancelled'
+        ]);
+
+        if ($role === 'hospital_admin' && (int) $validated['hospital_id'] !== (int) $user->hospital_id) {
+            return response()->json([
+                'message' => 'You can only create OPD dates for your hospital'
+            ], 403);
+        }
+
+        $validated['date'] = date('Y-m-d', strtotime($validated['date']));
+
+        // check date is already exists for the hospital
+        $existingOpdDate = OpdDate::where('hospital_id', $validated['hospital_id'])
+            ->where('date', $validated['date'])
+            ->where('status', 'scheduled')
+            ->exists();
+
+        if ($existingOpdDate) {
+            return response()->json([
+                'message' => 'An OPD date already exists for this hospital on the selected date.'
+            ], 400);
+        }
 
         try {
-            $request->validate([
-                'hospital_id' => 'required|exists:hospitals,id',
-                'date' => 'required|date|after_or_equal:today',
-                'start_time' => 'required|date_format:H:i',
-                'end_time' => 'required|date_format:H:i|after:start_time',
-                'status' => 'in:scheduled,completed,cancelled'
-            ]);
+            DB::beginTransaction();
 
-            // get date only 
-            $request->merge(['date' => date('Y-m-d', strtotime($request->date))]);
-
-            // check date is already exists for the hospital
-            $existingOpdDate = OpdDate::where('hospital_id', $request->hospital_id)
-                ->where('date', $request->date)
-                ->where('status', 'scheduled')
-                ->exists();
-
-            if ($existingOpdDate) {
-                return response()->json([
-                    'message' => 'An OPD date already exists for this hospital on the selected date.'
-                ], 400);
-            }
-
-            // Check if user has permission to create OPD date
-            if ($request->user()->role->name === 'hospital_admin') {
-                $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-                if ($userHospitalId !== (int)$request->hospital_id) {
-                    return response()->json([
-                        'message' => 'You can only create OPD dates for your hospital'
-                    ], 403);
-                }
-            }
-
-            $opdDate = OpdDate::create($request->all());
+            $opdDate = OpdDate::create($validated);
             $opdDate->load(['hospital:id,name']);
 
             DB::commit();
 
             return response()->json($opdDate, 201);
-        } catch (ValidationException $e) {
-            DB::rollBack();
-            return response()->json([
-                'message' => $e->validator->errors()->first()
-            ], 400);
         } catch (Exception $e) {
             DB::rollBack();
             return response()->json(['error' => $e->getMessage()], 500);
@@ -147,54 +149,70 @@ class OpdDateController extends Controller
             return response()->json(['message' => 'OPD date not found'], 404);
         }
 
-        DB::beginTransaction();
+        $user = $request->user();
+        $role = $user->role?->name;
+
+        if (!in_array($role, ['super_admin', 'hospital_admin'], true)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($role === 'hospital_admin') {
+            if (!$user->hospital_id || (int) $user->hospital_id !== (int) $opdDate->hospital_id) {
+                return response()->json([
+                    'message' => 'You can only update OPD dates for your hospital'
+                ], 403);
+            }
+
+            if ($request->has('hospital_id') && (int) $request->hospital_id !== (int) $opdDate->hospital_id) {
+                return response()->json([
+                    'message' => 'The hospital of an OPD date cannot be changed'
+                ], 403);
+            }
+        }
+
+        $validated = $request->validate([
+            'hospital_id' => 'sometimes|integer|exists:hospitals,id',
+            'date' => 'required|date|after_or_equal:today',
+            'start_time' => 'required|date_format:H:i',
+            'end_time' => 'required|date_format:H:i|after:start_time',
+            'status' => 'in:scheduled,completed,cancelled'
+        ]);
+
+        if (array_key_exists('hospital_id', $validated)
+            && (int) $validated['hospital_id'] !== (int) $opdDate->hospital_id) {
+            return response()->json([
+                'message' => 'The hospital of an OPD date cannot be changed',
+                'errors' => [
+                    'hospital_id' => ['The hospital of an OPD date cannot be changed.'],
+                ],
+            ], 422);
+        }
+
+        unset($validated['hospital_id']);
+        $validated['date'] = date('Y-m-d', strtotime($validated['date']));
+
+        // check date is already exists for the hospital
+        $existingOpdDate = OpdDate::where('hospital_id', $opdDate->hospital_id)
+            ->where('date', $validated['date'])
+            ->where('status', 'scheduled')
+            ->where('id', '!=', $id)
+            ->exists();
+
+        if ($existingOpdDate) {
+            return response()->json([
+                'message' => 'An OPD date already exists for this hospital on the selected date.'
+            ], 400);
+        }
 
         try {
-            $request->validate([
-                'hospital_id' => 'required|exists:hospitals,id',
-                'date' => 'required|date|after_or_equal:today',
-                'start_time' => 'required|date_format:H:i',
-                'end_time' => 'required|date_format:H:i|after:start_time',
-                'status' => 'in:scheduled,completed,cancelled'
-            ]);
+            DB::beginTransaction();
 
-            // get date only 
-            $request->merge(['date' => date('Y-m-d', strtotime($request->date))]);
-
-            // check date is already exists for the hospital
-            $existingOpdDate = OpdDate::where('hospital_id', $request->hospital_id)
-                ->where('date', $request->date)
-                ->where('status', 'scheduled')
-                ->where('id', '!=', $id)
-                ->exists();
-
-            if ($existingOpdDate) {
-                return response()->json([
-                    'message' => 'An OPD date already exists for this hospital on the selected date.'
-                ], 400);
-            }
-
-            // Check if user has permission to update OPD date
-            if ($request->user()->role->name === 'hospital_admin') {
-                $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-                if ($userHospitalId !== (int)$request->hospital_id || $userHospitalId !== $opdDate->hospital_id) {
-                    return response()->json([
-                        'message' => 'You can only update OPD dates for your hospital'
-                    ], 403);
-                }
-            }
-
-            $opdDate->update($request->all());
+            $opdDate->update($validated);
             $opdDate->load(['hospital:id,name']);
 
             DB::commit();
 
             return response()->json($opdDate);
-        } catch (ValidationException $e) {
-            DB::rollBack();
-            return response()->json([
-                'message' => $e->validator->errors()->first()
-            ], 400);
         } catch (Exception $e) {
             DB::rollBack();
             return response()->json(['error' => $e->getMessage()], 500);
@@ -291,23 +309,28 @@ class OpdDateController extends Controller
             return response()->json(['message' => 'OPD date not found'], 404);
         }
 
-        $request->validate([
+        $user = $request->user();
+        $role = $user->role?->name;
+
+        if (!in_array($role, ['super_admin', 'hospital_admin'], true)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($role === 'hospital_admin'
+            && (!$user->hospital_id || (int) $user->hospital_id !== (int) $opdDate->hospital_id)) {
+            return response()->json([
+                'message' => 'You can only update OPD dates for your hospital'
+            ], 403);
+        }
+
+        $validated = $request->validate([
             'status' => 'required|in:scheduled,completed,cancelled'
         ]);
 
-        DB::beginTransaction();
-
         try {
-            // Check if user has permission to update OPD date
-            $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-            if ($userHospitalId !== $opdDate->hospital_id) {
-                return response()->json([
-                    'message' => 'You can only update OPD dates for your hospital'
-                ], 403);
-            }
+            DB::beginTransaction();
 
-
-            $opdDate->update($request->only('status'));
+            $opdDate->update($validated);
             DB::commit();
 
             return response()->json($opdDate);

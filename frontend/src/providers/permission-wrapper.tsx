@@ -6,13 +6,16 @@ import { NotFoundPage } from "@/pages";
 export const PermissionWrapper: FC<{
   children: React.ReactNode;
   permissions: string[] | null;
+  roles?: string[];
   is404?: boolean;
-}> = ({ children, permissions, is404 = false }) => {
+}> = ({ children, permissions, roles, is404 = false }) => {
   const { user } = useAuth();
 
-  if (!permissions) return <>{children}</>;
+  const hasPermission =
+    !permissions || user?.permissions?.some((perm) => permissions.includes(perm));
+  const hasRole = !roles || (user?.role && roles.includes(user.role));
 
-  if (!user || !user?.permissions?.some((perm) => permissions.includes(perm))) {
+  if (!user || !hasPermission || !hasRole) {
     if (is404) {
       return <NotFoundPage />;
     }

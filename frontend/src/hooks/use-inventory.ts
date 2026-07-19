@@ -2,6 +2,7 @@
 import type { Batch, Inventory } from "@/services/inventory";
 
 import { inventoryServices } from "@/services/inventory";
+import { hospitalsServices } from "@/services/hospitals";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 // Get inventories with pagination
@@ -43,6 +44,21 @@ export const useInventoryById = (id: number) =>
         return null;
       }
     },
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+// Get hospitals for the Super Admin inventory selector
+export const useInventoryHospitals = (search: string, enabled: boolean) =>
+  useQuery({
+    queryKey: ["inventory-hospitals", search],
+    queryFn: () =>
+      hospitalsServices.getHospitals({
+        currentPage: 1,
+        pageSize: 100,
+        search,
+      }),
+    enabled,
     retry: false,
     refetchOnWindowFocus: false,
   });

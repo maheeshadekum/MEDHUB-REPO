@@ -84,6 +84,12 @@ export const hospitalsServices = {
     return data;
   },
 
+  // Update settings for a selected hospital
+  updateHospitalSettings: async (id: number, hospital: Hospital) => {
+    const { data } = await api.put(`/hospitals/${id}/settings`, hospital);
+    return data as Hospital;
+  },
+
   // Delete a hospital
   deleteHospital: async (id: number) => {
     await api.delete(`/hospitals/${id}`);

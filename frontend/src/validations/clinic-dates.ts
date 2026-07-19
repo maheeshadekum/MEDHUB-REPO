@@ -3,6 +3,7 @@ import { z } from "zod";
 export const clinicDateSchema = z
   .object({
     id: z.coerce.number().optional(),
+    hospital_id: z.coerce.number().min(1, { message: "Hospital is required" }),
     clinic_id: z.coerce.number().min(1, { message: "Clinic is required" }),
     date: z.coerce
       .date()

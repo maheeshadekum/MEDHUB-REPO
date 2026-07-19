@@ -76,6 +76,10 @@ function App() {
           <Route path="/prescriptions" element={<PrescriptionsPage />} />
           <Route path="/roles" element={<RolesPage />} />
           <Route path="/settings/hospital" element={<HospitalSettingsPage />} />
+          <Route
+            path="/settings/hospital/:hospitalId"
+            element={<HospitalSettingsPage />}
+          />
 
           {/* 404 route */}
           <Route path="*" element={<NotFoundPage />} />

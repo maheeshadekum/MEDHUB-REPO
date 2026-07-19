@@ -4,10 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\ClinicDate;
 use App\Models\Clinic;
-use Exception;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\ValidationException;
 
 class ClinicDateController extends Controller
 {
@@ -16,6 +14,17 @@ class ClinicDateController extends Controller
      */
     public function index(Request $request)
     {
+        $user = $request->user();
+        $role = $user->role?->name;
+
+        if (!in_array($role, ['super_admin', 'hospital_admin'], true)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($role === 'hospital_admin' && !$user->hospital_id) {
+            return response()->json(['message' => 'No hospital is assigned to your account'], 403);
+        }
+
         $search = $request->input('search', '');
         $pageSize = $request->input('size', 20);
         $pageNumber = $request->input('page', 1);
@@ -30,17 +39,15 @@ class ClinicDateController extends Controller
             $query->where('date', '>=', now());
         }
 
-        // Filter by clinic if provided
+        if ($role === 'hospital_admin') {
+            $query->whereHas('clinic', function ($clinicQuery) use ($user) {
+                $clinicQuery->where('hospital_id', $user->hospital_id);
+            });
+        }
+
+        // Filter by clinic without bypassing the hospital scope above
         if ($clinicId) {
             $query->where('clinic_id', $clinicId);
-        } elseif ($request->user()->role->name !== 'super_admin') {
-            // Hospital employees only see dates from their hospital's clinics
-            $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-            if ($userHospitalId) {
-                $query->whereHas('clinic', function ($q) use ($userHospitalId) {
-                    $q->where('hospital_id', $userHospitalId);
-                });
-            }
         }
 
         // Filter by status if provided
@@ -69,64 +76,71 @@ class ClinicDateController extends Controller
      */
     public function store(Request $request)
     {
-        DB::beginTransaction();
+        $user = $request->user();
+        $role = $user->role?->name;
 
-        try {
-            $request->validate([
-                'clinic_id' => 'required|exists:clinics,id',
-                'date' => 'required|date|after_or_equal:today',
-                'start_time' => 'required|date_format:H:i',
-                'end_time' => 'required|date_format:H:i|after:start_time',
-                'status' => 'in:scheduled,completed,cancelled'
-            ]);
-
-            // get date only 
-            $request->merge(['date' => date('Y-m-d', strtotime($request->date))]);
-
-            // check date is already exists for the hospital
-            $existingClinicDate = ClinicDate::where('clinic_id', $request->clinic_id)
-                ->where('date', $request->date)
-                ->where('status', 'scheduled')
-                ->exists();
-
-            if ($existingClinicDate) {
-                return response()->json([
-                    'message' => 'An clinic date already exists for this hospital on the selected date.'
-                ], 400);
-            }
-
-            // Check if user has permission to create clinic date
-            $clinic = Clinic::find($request->clinic_id);
-            if ($request->user()->role->name === 'hospital_admin') {
-                $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-                if ($userHospitalId !== $clinic->hospital_id) {
-                    return response()->json([
-                        'message' => 'You can only create clinic dates for your hospital\'s clinics'
-                    ], 403);
-                }
-            }
-
-            $clinicDate = ClinicDate::create($request->all());
-            $clinicDate->load(['clinic:id,name,hospital_id', 'clinic.hospital:id,name']);
-
-            DB::commit();
-
-            return response()->json($clinicDate, 201);
-        } catch (ValidationException $e) {
-            DB::rollBack();
-            return response()->json([
-                'message' => $e->validator->errors()->first()
-            ], 400);
-        } catch (Exception $e) {
-            DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+        if (!in_array($role, ['super_admin', 'hospital_admin'], true)) {
+            return response()->json(['message' => 'Forbidden'], 403);
         }
+
+        if ($role === 'hospital_admin' && !$user->hospital_id) {
+            return response()->json(['message' => 'No hospital is assigned to your account'], 403);
+        }
+
+        $validated = $request->validate([
+            'hospital_id' => 'required|integer|exists:hospitals,id',
+            'clinic_id' => 'required|integer|exists:clinics,id',
+            'date' => 'required|date|after_or_equal:today',
+            'start_time' => 'required|date_format:H:i',
+            'end_time' => 'required|date_format:H:i|after:start_time',
+            'status' => 'required|in:scheduled,completed,cancelled'
+        ]);
+
+        $clinic = Clinic::findOrFail($validated['clinic_id']);
+        $submittedHospitalId = (int) $validated['hospital_id'];
+        $clinicHospitalId = (int) $clinic->hospital_id;
+
+        if ($role === 'hospital_admin'
+            && ($clinicHospitalId !== (int) $user->hospital_id
+                || $submittedHospitalId !== (int) $user->hospital_id)) {
+            return response()->json([
+                'message' => 'You can only create Clinic Dates for your hospital'
+            ], 403);
+        }
+
+        if ($submittedHospitalId !== $clinicHospitalId) {
+            return response()->json([
+                'message' => 'The selected Clinic does not belong to the selected Hospital',
+                'errors' => [
+                    'clinic_id' => ['The selected Clinic does not belong to the selected Hospital.'],
+                ],
+            ], 422);
+        }
+
+        $validated['date'] = date('Y-m-d', strtotime($validated['date']));
+
+        $existingClinicDate = ClinicDate::where('clinic_id', $validated['clinic_id'])
+            ->where('date', $validated['date'])
+            ->where('status', 'scheduled')
+            ->exists();
+
+        if ($existingClinicDate) {
+            return response()->json([
+                'message' => 'A Clinic Date already exists for this Clinic on the selected date.'
+            ], 400);
+        }
+
+        unset($validated['hospital_id']);
+        $clinicDate = DB::transaction(fn() => ClinicDate::create($validated));
+        $clinicDate->load(['clinic:id,name,hospital_id', 'clinic.hospital:id,name']);
+
+        return response()->json($clinicDate, 201);
     }
 
     /**
      * Display the specified clinic date.
      */
-    public function show($id)
+    public function show($id, Request $request)
     {
         $clinicDate = ClinicDate::with([
             'clinic:id,name,hospital_id,total_hourly_tokens,self_hourly_tokens',
@@ -138,6 +152,10 @@ class ClinicDateController extends Controller
             return response()->json(['message' => 'Clinic date not found'], 404);
         }
 
+        if (!$this->canAccessClinicDate($request, $clinicDate)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
         return response()->json($clinicDate);
     }
 
@@ -146,65 +164,65 @@ class ClinicDateController extends Controller
      */
     public function update(Request $request, $id)
     {
-        $clinicDate = ClinicDate::find($id);
+        $clinicDate = ClinicDate::with(['clinic:id,hospital_id', 'clinic.hospital:id,name'])->find($id);
 
         if (!$clinicDate) {
             return response()->json(['message' => 'Clinic date not found'], 404);
         }
 
-        DB::beginTransaction();
-
-        try {
-            $request->validate([
-                'clinic_id' => 'required|exists:clinics,id',
-                'date' => 'required|date|after_or_equal:today',
-                'start_time' => 'required|date_format:H:i',
-                'end_time' => 'required|date_format:H:i|after:start_time',
-                'status' => 'in:scheduled,completed,cancelled'
-            ]);
-
-            // get date only 
-            $request->merge(['date' => date('Y-m-d', strtotime($request->date))]);
-
-            // check date is already exists for the hospital
-            $existingClinicDate = ClinicDate::where('clinic_id', $request->clinic_id)
-                ->where('date', $request->date)
-                ->where('status', 'scheduled')
-                ->where('id', '!=', $id)
-                ->exists();
-
-            if ($existingClinicDate) {
-                return response()->json([
-                    'message' => 'An clinic date already exists for this hospital on the selected date.'
-                ], 400);
-            }
-
-            // Check if user has permission to update clinic date
-            $clinic = Clinic::find($request->clinic_id);
-            if ($request->user()->role->name === 'hospital_admin') {
-                $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-                if ($userHospitalId !== $clinic->hospital_id) {
-                    return response()->json([
-                        'message' => 'You can only update clinic dates for your hospital\'s clinics'
-                    ], 403);
-                }
-            }
-
-            $clinicDate->update($request->all());
-            $clinicDate->load(['clinic:id,name,hospital_id', 'clinic.hospital:id,name']);
-
-            DB::commit();
-
-            return response()->json($clinicDate);
-        } catch (ValidationException $e) {
-            DB::rollBack();
-            return response()->json([
-                'message' => $e->validator->errors()->first()
-            ], 400);
-        } catch (Exception $e) {
-            DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+        if (!$this->canAccessClinicDate($request, $clinicDate)) {
+            return response()->json(['message' => 'Forbidden'], 403);
         }
+
+        $validated = $request->validate([
+            'clinic_id' => 'sometimes|integer|exists:clinics,id',
+            'hospital_id' => 'sometimes|integer|exists:hospitals,id',
+            'date' => 'required|date|after_or_equal:today',
+            'start_time' => 'required|date_format:H:i',
+            'end_time' => 'required|date_format:H:i|after:start_time',
+            'status' => 'required|in:scheduled,completed,cancelled'
+        ]);
+
+        if (array_key_exists('clinic_id', $validated)
+            && (int) $validated['clinic_id'] !== (int) $clinicDate->clinic_id) {
+            return response()->json([
+                'message' => 'The Clinic of a Clinic Date cannot be changed',
+                'errors' => [
+                    'clinic_id' => ['The Clinic of a Clinic Date cannot be changed.'],
+                ],
+            ], 422);
+        }
+
+        $hospitalId = (int) $clinicDate->clinic->hospital_id;
+        if (array_key_exists('hospital_id', $validated)
+            && (int) $validated['hospital_id'] !== $hospitalId) {
+            return response()->json([
+                'message' => 'The Hospital of a Clinic Date cannot be changed',
+                'errors' => [
+                    'hospital_id' => ['The Hospital of a Clinic Date cannot be changed.'],
+                ],
+            ], 422);
+        }
+
+        unset($validated['clinic_id'], $validated['hospital_id']);
+        $validated['date'] = date('Y-m-d', strtotime($validated['date']));
+
+        $existingClinicDate = ClinicDate::where('clinic_id', $clinicDate->clinic_id)
+            ->where('date', $validated['date'])
+            ->where('status', 'scheduled')
+            ->where('id', '!=', $id)
+            ->exists();
+
+        if ($existingClinicDate) {
+            return response()->json([
+                'message' => 'A Clinic Date already exists for this Clinic on the selected date.'
+            ], 400);
+        }
+
+        DB::transaction(fn() => $clinicDate->update($validated));
+        $clinicDate->load(['clinic:id,name,hospital_id', 'clinic.hospital:id,name']);
+
+        return response()->json($clinicDate);
     }
 
     /**
@@ -212,41 +230,26 @@ class ClinicDateController extends Controller
      */
     public function destroy($id, Request $request)
     {
-        $clinicDate = ClinicDate::find($id);
+        $clinicDate = ClinicDate::with('clinic:id,hospital_id')->find($id);
 
         if (!$clinicDate) {
             return response()->json(['message' => 'Clinic date not found'], 404);
         }
 
-        DB::beginTransaction();
-
-        try {
-            // Check if user has permission to delete clinic date
-            if ($request->user()->role->name === 'hospital_admin') {
-                $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-                if ($userHospitalId !== $clinicDate->clinic->hospital_id) {
-                    return response()->json([
-                        'message' => 'You can only delete clinic dates for your hospital\'s clinics'
-                    ], 403);
-                }
-            }
-
-            // Check if clinic date has tokens
-            if ($clinicDate->clinicTokens()->exists()) {
-                return response()->json([
-                    'message' => 'Cannot delete clinic date with existing reservations'
-                ], 400);
-            }
-
-            $clinicDate->delete();
-
-            DB::commit();
-
-            return response()->json(['message' => 'Clinic date deleted successfully']);
-        } catch (Exception $e) {
-            DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+        if (!$this->canAccessClinicDate($request, $clinicDate)) {
+            return response()->json(['message' => 'Forbidden'], 403);
         }
+
+        // Preserve the existing restriction for Clinic Dates with reservations.
+        if ($clinicDate->clinicTokens()->exists()) {
+            return response()->json([
+                'message' => 'Cannot delete clinic date with existing reservations'
+            ], 400);
+        }
+
+        DB::transaction(fn() => $clinicDate->delete());
+
+        return response()->json(['message' => 'Clinic date deleted successfully']);
     }
 
     /**
@@ -259,14 +262,17 @@ class ClinicDateController extends Controller
             return response()->json(['message' => 'Clinic not found'], 404);
         }
 
-        // Check permission
-        if ($request->user()->role->name === 'hospital_admin') {
-            $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-            if ($userHospitalId !== $clinic->hospital_id) {
-                return response()->json([
-                    'message' => 'You can only view clinic dates for your hospital\'s clinics'
-                ], 403);
-            }
+        $role = $request->user()->role?->name;
+        if (!in_array($role, ['super_admin', 'hospital_admin'], true)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($role === 'hospital_admin'
+            && (!$request->user()->hospital_id
+                || (int) $request->user()->hospital_id !== (int) $clinic->hospital_id)) {
+            return response()->json([
+                'message' => 'You can only view Clinic Dates for your hospital'
+            ], 403);
         }
 
         $status = $request->input('status');
@@ -291,34 +297,39 @@ class ClinicDateController extends Controller
      */
     public function updateStatus(Request $request, $id)
     {
-        $clinicDate = ClinicDate::find($id);
+        $clinicDate = ClinicDate::with('clinic:id,hospital_id')->find($id);
 
         if (!$clinicDate) {
             return response()->json(['message' => 'Clinic date not found'], 404);
         }
 
-        $request->validate([
+        if (!$this->canAccessClinicDate($request, $clinicDate)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
             'status' => 'required|in:scheduled,completed,cancelled'
         ]);
 
-        DB::beginTransaction();
+        DB::transaction(fn() => $clinicDate->update($validated));
 
-        try {
-            // Check if user has permission to update clinic date
-            $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-            if ($userHospitalId !== $clinicDate->clinic->hospital_id) {
-                return response()->json([
-                    'message' => 'You can only update clinic dates for your hospital\'s clinics'
-                ], 403);
-            }
+        return response()->json($clinicDate);
+    }
 
-            $clinicDate->update($request->only('status'));
-            DB::commit();
+    /**
+     * Allow global Super Admin access and hospital-scoped Hospital Admin access.
+     */
+    private function canAccessClinicDate(Request $request, ClinicDate $clinicDate): bool
+    {
+        $user = $request->user();
+        $role = $user->role?->name;
 
-            return response()->json($clinicDate);
-        } catch (Exception $e) {
-            DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+        if ($role === 'super_admin') {
+            return true;
         }
+
+        return $role === 'hospital_admin'
+            && $user->hospital_id
+            && (int) $user->hospital_id === (int) $clinicDate->clinic->hospital_id;
     }
 }

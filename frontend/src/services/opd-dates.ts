@@ -24,7 +24,13 @@ export interface OpdDatesParams {
 }
 
 type OpdDateWithoutId = z.infer<typeof opdDateSchema>;
-export type OpdDate = OpdDateWithoutId & { id?: number };
+export type OpdDate = OpdDateWithoutId & {
+  id?: number;
+  hospital?: {
+    id: number;
+    name: string;
+  };
+};
 
 export const opdDatesServices = {
   // Get all opd dates with pagination and filters
@@ -59,7 +65,16 @@ export const opdDatesServices = {
 
   // Update existing opd date
   updateOpdDate: async (data: OpdDate) => {
-    const { data: responseData } = await api.put(`/opd-dates/${data.id}`, data);
+    const schedule = {
+      date: data.date,
+      start_time: data.start_time,
+      end_time: data.end_time,
+      status: data.status,
+    };
+    const { data: responseData } = await api.put(
+      `/opd-dates/${data.id}`,
+      schedule,
+    );
     return responseData as OpdDate;
   },
 

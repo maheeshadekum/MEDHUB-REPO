@@ -27,6 +27,18 @@ const getStatusBadgeVariant = (status: string) => {
 
 export const clinicDateColumns: ColumnDef<ClinicDate>[] = [
   {
+    id: "clinic",
+    header: "Clinic",
+    cell: ({ row }) => <span>{row.original.clinic?.name || "—"}</span>,
+  },
+  {
+    id: "hospital",
+    header: "Hospital",
+    cell: ({ row }) => (
+      <span>{row.original.clinic?.hospital?.name || "—"}</span>
+    ),
+  },
+  {
     accessorKey: "date",
     header: "Date",
     cell: ({ row }) => {
@@ -77,7 +89,10 @@ export const clinicDateColumns: ColumnDef<ClinicDate>[] = [
           <DropdownMenuContent align="end">
             <DropdownMenuLabel>Actions</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <PermissionWrapper permissions={[permissions.manageHospitals]}>
+            <PermissionWrapper
+              permissions={[permissions.manageHospitals]}
+              roles={["super_admin", "hospital_admin"]}
+            >
               <DropdownMenuItem
                 onClick={() => {
                   setSelectedClinicDate(row.original);
@@ -87,7 +102,10 @@ export const clinicDateColumns: ColumnDef<ClinicDate>[] = [
                 Edit Clinic Date
               </DropdownMenuItem>
             </PermissionWrapper>
-            <PermissionWrapper permissions={[permissions.manageHospitals]}>
+            <PermissionWrapper
+              permissions={[permissions.manageHospitals]}
+              roles={["super_admin", "hospital_admin"]}
+            >
               <DropdownMenuItem
                 onClick={() => {
                   setSelectedClinicDate(row.original);
@@ -97,7 +115,10 @@ export const clinicDateColumns: ColumnDef<ClinicDate>[] = [
                 Update Status
               </DropdownMenuItem>
             </PermissionWrapper>
-            <PermissionWrapper permissions={[permissions.manageHospitals]}>
+            <PermissionWrapper
+              permissions={[permissions.manageHospitals]}
+              roles={["super_admin", "hospital_admin"]}
+            >
               <DropdownMenuItem
                 onClick={() => {
                   setShowDetails(true);

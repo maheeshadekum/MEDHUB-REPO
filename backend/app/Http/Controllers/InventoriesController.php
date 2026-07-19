@@ -145,7 +145,14 @@ class InventoriesController extends Controller
                 'hospital_id' => $inventory->hospital_id,
                 'hospital' => $inventory->hospital,
                 'available_quantity' => $inventory->batches->sum('quantity'),
-                'batches' => [],
+                'batches' => $inventory->batches->map(function ($batch) {
+                    return [
+                        'id' => $batch->id,
+                        'batch_number' => $batch->batch_number,
+                        'expiry_date' => $batch->expiry_date,
+                        'quantity' => $batch->quantity,
+                    ];
+                }),
                 'nearby_suggestions' => [],
             ];
         });
@@ -426,32 +433,51 @@ class InventoriesController extends Controller
     // create inventory for specific hospital
     public function addInventory(Request $request)
     {
-        try {
-            // start transaction
-            DB::beginTransaction();
+        $user = $request->user();
 
-            // Find hospital by requested user's hospital ID
-            $hospitalRecord = Hospital::where('id', $request->user()->hospital_id)->first();
+        if (!$user->hasRole(['super_admin', 'pharmacist'])) {
+            return response()->json(['message' => 'You are not authorized to manage inventory'], 403);
+        }
 
-            if (!$hospitalRecord) {
-                return response()->json(['message' => 'Hospital not found'], 404);
+        $rules = [
+            'drug_name' => 'required|string|max:255',
+            'brand_name' => 'required|string|max:255',
+            'weight' => 'required|numeric|gt:0',
+            'type' => 'required|in:tablet,capsule,syrup,injection,ointment',
+        ];
+
+        if ($user->hasRole('super_admin')) {
+            $rules['hospital_id'] = 'required|integer|min:1|exists:hospitals,id';
+        }
+
+        $validated = $request->validate($rules);
+
+        if ($user->hasRole('super_admin')) {
+            $hospitalId = (int) $validated['hospital_id'];
+        } else {
+            if (!$user->hospital_id || !Hospital::whereKey($user->hospital_id)->exists()) {
+                return response()->json(['message' => 'No valid hospital is assigned to your account'], 403);
             }
 
-            $request->validate([
-                'drug_name' => 'required|string|max:255',
-                'brand_name' => 'required|string|max:255',
-                'weight' => 'nullable|numeric',
-                'type' => 'required|string|max:100',
-            ]);
+            if ($request->has('hospital_id') && (int) $request->input('hospital_id') !== (int) $user->hospital_id) {
+                return response()->json(['message' => 'You cannot manage inventory for another hospital'], 403);
+            }
+
+            $hospitalId = (int) $user->hospital_id;
+        }
+
+        try {
+            DB::beginTransaction();
 
             // Check if drug already exists for this hospital
-            $existingInventory = Inventories::where('hospital_id', $hospitalRecord->id)
-                ->where('drug_name', $request->input('drug_name'))
-                ->where('brand_name', $request->input('brand_name'))
-                ->where('type', $request->input('type'))
+            $existingInventory = Inventories::where('hospital_id', $hospitalId)
+                ->where('drug_name', $validated['drug_name'])
+                ->where('brand_name', $validated['brand_name'])
+                ->where('type', $validated['type'])
                 ->first();
 
             if ($existingInventory) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Inventory with this drug name, brand name and type already exists for this hospital'
                 ], 400);
@@ -459,11 +485,11 @@ class InventoriesController extends Controller
 
             // create inventory
             $inventory = new Inventories([
-                'hospital_id' => $hospitalRecord->id,
-                'drug_name' => $request->drug_name,
-                'brand_name' => $request->brand_name,
-                'weight' => $request->weight,
-                'type' => $request->type,
+                'hospital_id' => $hospitalId,
+                'drug_name' => $validated['drug_name'],
+                'brand_name' => $validated['brand_name'],
+                'weight' => $validated['weight'],
+                'type' => $validated['type'],
             ]);
 
             // save inventory
@@ -490,72 +516,58 @@ class InventoriesController extends Controller
     // add batch to inventory
     public function addBatch(Request $request)
     {
+        $user = $request->user();
+
+        if (!$user->hasRole(['super_admin', 'pharmacist'])) {
+            return response()->json(['message' => 'You are not authorized to manage inventory batches'], 403);
+        }
+
+        $validated = $request->validate([
+            'inventory_id' => 'required|integer|min:1',
+            'batch_number' => 'required|string|max:255',
+            'expiry_date' => 'required|date|after:today',
+            'quantity' => 'required|integer|min:1',
+        ]);
+
+        $inventory = Inventories::find($validated['inventory_id']);
+
+        if (!$inventory) {
+            return response()->json(['message' => 'Inventory not found'], 404);
+        }
+
+        if ($authorizationResponse = $this->authorizeBatchManagement($user, $inventory)) {
+            return $authorizationResponse;
+        }
+
+        if ($request->has('hospital_id') && (int) $request->input('hospital_id') !== (int) $inventory->hospital_id) {
+            return response()->json(['message' => 'The selected inventory determines batch hospital ownership'], 403);
+        }
+
+        $existingBatch = InventoryBatch::where('inventory_id', $inventory->id)
+            ->where('batch_number', $validated['batch_number'])
+            ->first();
+
+        if ($existingBatch) {
+            return response()->json([
+                'message' => 'Batch with this number already exists for this medicine'
+            ], 400);
+        }
+
         try {
-            // start transaction
-            DB::beginTransaction();
+            $batch = DB::transaction(function () use ($inventory, $validated) {
+                return InventoryBatch::create([
+                    'inventory_id' => $inventory->id,
+                    'batch_number' => $validated['batch_number'],
+                    'expiry_date' => Carbon::parse($validated['expiry_date'])->format('Y-m-d'),
+                    'quantity' => $validated['quantity'],
+                ]);
+            });
 
-            // Find hospital by requested user's hospital ID
-            $hospitalRecord = Hospital::where('id', $request->user()->hospital_id)->first();
-
-            if (!$hospitalRecord) {
-                return response()->json(['message' => 'Hospital not found'], 404);
-            }
-
-            $request->validate([
-                'inventory_id' => 'required|integer|exists:inventories,id',
-                'batch_number' => 'required|string|max:255',
-                'expiry_date' => 'required|date',
-                'quantity' => 'required|integer|min:1'
-            ]);
-
-            // Check if inventory belongs to user's hospital
-            $inventory = Inventories::where('id', $request->inventory_id)
-                ->where('hospital_id', $hospitalRecord->id)
-                ->first();
-
-            if (!$inventory) {
-                return response()->json(['message' => 'Inventory not found or does not belong to your hospital'], 404);
-            }
-
-            // Check if batch with same number already exists for this inventory
-            if ($request->batch_number) {
-                $existingBatch = InventoryBatch::where('inventory_id', $request->inventory_id)
-                    ->where('batch_number', $request->batch_number)
-                    ->first();
-
-                if ($existingBatch) {
-                    return response()->json([
-                        'message' => 'Batch with this number already exists for this medicine'
-                    ], 400);
-                }
-            }
-
-            // convert date with Carbon
-            $expiryDate = Carbon::parse($request->expiry_date)->format('Y-m-d H:i:s');
-
-
-            // create batch
-            $batch = InventoryBatch::create([
-                'inventory_id' => $request->inventory_id,
-                'batch_number' => $request->batch_number,
-                'expiry_date' => $expiryDate,
-                'quantity' => $request->quantity
-            ]);
-
-            // commit transaction
-            DB::commit();
             return response()->json([
                 'message' => 'Batch created successfully',
                 'batch' => $batch
             ], 201);
-        } catch (ValidationException $e) {
-            DB::rollBack();
-            return response()->json([
-                'message' => $e->validator->errors()->first()
-            ], 400);
         } catch (Exception $e) {
-            // rollback transaction
-            DB::rollBack();
             return response()->json(['message' => 'Error creating batch', 'error' => $e->getMessage()], 500);
         }
     }
@@ -563,66 +575,54 @@ class InventoriesController extends Controller
     // update batch
     public function updateBatch(Request $request, $id)
     {
-        try {
-            // start transaction
-            DB::beginTransaction();
+        $user = $request->user();
 
-            // Find hospital by requested user's hospital ID
-            $hospitalRecord = Hospital::where('id', $request->user()->hospital_id)->first();
+        if (!$user->hasRole(['super_admin', 'pharmacist'])) {
+            return response()->json(['message' => 'You are not authorized to manage inventory batches'], 403);
+        }
 
-            if (!$hospitalRecord) {
-                return response()->json(['message' => 'Hospital not found'], 404);
-            }
+        $batch = InventoryBatch::with('inventory')->find($id);
 
-            $batch = InventoryBatch::with('inventory')->find($id);
+        if (!$batch || !$batch->inventory) {
+            return response()->json(['message' => 'Batch not found'], 404);
+        }
 
-            if (!$batch) {
-                return response()->json(['message' => 'Batch not found'], 404);
-            }
+        if ($authorizationResponse = $this->authorizeBatchManagement($user, $batch->inventory)) {
+            return $authorizationResponse;
+        }
 
-            // Check if batch belongs to user's hospital
-            if ($batch->inventory->hospital_id != $hospitalRecord->id) {
-                return response()->json(['message' => 'Batch does not belong to your hospital'], 403);
-            }
+        if ($request->has('inventory_id') && (int) $request->input('inventory_id') !== (int) $batch->inventory_id) {
+            return response()->json(['message' => 'Batch inventory ownership cannot be changed'], 403);
+        }
 
-            $request->validate([
-                'batch_number' => 'nullable|string|max:255',
-                'expiry_date' => 'nullable|date',
-                'quantity' => 'required|integer|min:0'
-            ]);
+        $validated = $request->validate([
+            'batch_number' => 'required|string|max:255',
+            'expiry_date' => 'required|date|after:today',
+            'quantity' => 'required|integer|min:1',
+        ]);
 
-            // Check for duplicate batch number (excluding current batch)
-            if ($request->batch_number) {
-                $existingBatch = InventoryBatch::where('inventory_id', $batch->inventory_id)
-                    ->where('batch_number', $request->batch_number)
-                    ->where('id', '!=', $id)
-                    ->first();
+        $existingBatch = InventoryBatch::where('inventory_id', $batch->inventory_id)
+            ->where('batch_number', $validated['batch_number'])
+            ->where('id', '!=', $id)
+            ->first();
 
-                if ($existingBatch) {
-                    return response()->json([
-                        'message' => 'Batch with this number already exists for this inventory'
-                    ], 400);
-                }
-            }
-
-            // update batch
-            $batch->update([
-                'batch_number' => $request->batch_number,
-                'expiry_date' => $request->expiry_date,
-                'quantity' => $request->quantity
-            ]);
-
-            // commit transaction
-            DB::commit();
-            return response()->json(['message' => 'Batch updated successfully', 'batch' => $batch], 200);
-        } catch (ValidationException $e) {
-            DB::rollBack();
+        if ($existingBatch) {
             return response()->json([
-                'message' => $e->validator->errors()->first()
+                'message' => 'Batch with this number already exists for this inventory'
             ], 400);
+        }
+
+        try {
+            DB::transaction(function () use ($batch, $validated) {
+                $batch->update([
+                    'batch_number' => $validated['batch_number'],
+                    'expiry_date' => Carbon::parse($validated['expiry_date'])->format('Y-m-d'),
+                    'quantity' => $validated['quantity'],
+                ]);
+            });
+
+            return response()->json(['message' => 'Batch updated successfully', 'batch' => $batch], 200);
         } catch (Exception $e) {
-            // rollback transaction
-            DB::rollBack();
             return response()->json(['message' => 'Error updating batch', 'error' => $e->getMessage()], 500);
         }
     }
@@ -630,41 +630,52 @@ class InventoriesController extends Controller
     // update inventory
     public function updateInventory(Request $request, $id)
     {
+        $user = $request->user();
+
+        if (!$user->hasRole(['super_admin', 'pharmacist'])) {
+            return response()->json(['message' => 'You are not authorized to manage inventory'], 403);
+        }
+
+        $inventory = Inventories::find($id);
+
+        if (!$inventory) {
+            return response()->json(['message' => 'Inventory not found'], 404);
+        }
+
+        if ($user->hasRole('pharmacist')) {
+            if (!$user->hospital_id || !Hospital::whereKey($user->hospital_id)->exists()) {
+                return response()->json(['message' => 'No valid hospital is assigned to your account'], 403);
+            }
+
+            if ((int) $inventory->hospital_id !== (int) $user->hospital_id) {
+                return response()->json(['message' => 'You cannot manage inventory for another hospital'], 403);
+            }
+        }
+
+        if ($request->has('hospital_id') && (int) $request->input('hospital_id') !== (int) $inventory->hospital_id) {
+            return response()->json(['message' => 'Inventory hospital ownership cannot be changed'], 403);
+        }
+
+        $validated = $request->validate([
+            'drug_name' => 'required|string|max:255',
+            'brand_name' => 'required|string|max:255',
+            'weight' => 'required|numeric|gt:0',
+            'type' => 'required|in:tablet,capsule,syrup,injection,ointment',
+        ]);
+
         try {
-            // start transaction
             DB::beginTransaction();
 
-            // Find hospital by requested user's hospital ID
-            $hospitalRecord = Hospital::where('id', $request->user()->hospital_id)->first();
-
-            if (!$hospitalRecord) {
-                return response()->json(['message' => 'Hospital not found'], 404);
-            }
-
-            $inventory = Inventories::where('hospital_id', $hospitalRecord->id)
-                ->where('id', $id)
-                ->first();
-
-            if (!$inventory) {
-                return response()->json(['message' => 'Inventory not found'], 404);
-            }
-
-            $request->validate([
-                'drug_name' => 'required|string|max:255',
-                'brand_name' => 'required|string|max:255',
-                'weight' => 'nullable|numeric',
-                'type' => 'required|string|max:100',
-            ]);
-
             // Check for duplicate drug name, brand name and type (excluding current record)
-            $existingInventory = Inventories::where('hospital_id', $hospitalRecord->id)
-                ->where('drug_name', $request->input('drug_name'))
-                ->where('brand_name', $request->input('brand_name'))
-                ->where('type', $request->input('type'))
+            $existingInventory = Inventories::where('hospital_id', $inventory->hospital_id)
+                ->where('drug_name', $validated['drug_name'])
+                ->where('brand_name', $validated['brand_name'])
+                ->where('type', $validated['type'])
                 ->where('id', '!=', $id)
                 ->first();
 
             if ($existingInventory) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Inventory with this drug name, brand name and type already exists for this hospital'
                 ], 400);
@@ -672,10 +683,10 @@ class InventoriesController extends Controller
 
             // update inventory
             $inventory->update([
-                'drug_name' => $request->drug_name,
-                'brand_name' => $request->brand_name,
-                'weight' => $request->weight,
-                'type' => $request->type,
+                'drug_name' => $validated['drug_name'],
+                'brand_name' => $validated['brand_name'],
+                'weight' => $validated['weight'],
+                'type' => $validated['type'],
             ]);
 
             // commit transaction
@@ -696,25 +707,30 @@ class InventoriesController extends Controller
     // delete inventory (will cascade delete all batches)
     public function deleteInventory(Request $request, $id)
     {
+        $user = $request->user();
+
+        if (!$user->hasRole(['super_admin', 'pharmacist'])) {
+            return response()->json(['message' => 'You are not authorized to manage inventory'], 403);
+        }
+
+        $inventory = Inventories::find($id);
+
+        if (!$inventory) {
+            return response()->json(['message' => 'Inventory not found'], 404);
+        }
+
+        if ($user->hasRole('pharmacist')) {
+            if (!$user->hospital_id || !Hospital::whereKey($user->hospital_id)->exists()) {
+                return response()->json(['message' => 'No valid hospital is assigned to your account'], 403);
+            }
+
+            if ((int) $inventory->hospital_id !== (int) $user->hospital_id) {
+                return response()->json(['message' => 'You cannot manage inventory for another hospital'], 403);
+            }
+        }
+
         try {
-            // start transaction
             DB::beginTransaction();
-
-            // Find hospital by requested user's hospital ID
-            $hospitalRecord = Hospital::where('id', $request->user()->hospital_id)->first();
-
-            if (!$hospitalRecord) {
-                return response()->json(['message' => 'Hospital not found'], 404);
-            }
-
-            $inventory = Inventories::where('hospital_id', $hospitalRecord->id)
-                ->where('id', $id)
-                ->first();
-
-            if (!$inventory) {
-                return response()->json(['message' => 'Inventory not found'], 404);
-            }
-
             $inventory->delete();
 
             // commit transaction
@@ -730,38 +746,48 @@ class InventoriesController extends Controller
     // delete batch
     public function deleteBatch(Request $request, $id)
     {
+        $user = $request->user();
+
+        if (!$user->hasRole(['super_admin', 'pharmacist'])) {
+            return response()->json(['message' => 'You are not authorized to manage inventory batches'], 403);
+        }
+
+        $batch = InventoryBatch::with('inventory')->find($id);
+
+        if (!$batch || !$batch->inventory) {
+            return response()->json(['message' => 'Batch not found'], 404);
+        }
+
+        if ($authorizationResponse = $this->authorizeBatchManagement($user, $batch->inventory)) {
+            return $authorizationResponse;
+        }
+
         try {
-            // start transaction
-            DB::beginTransaction();
+            DB::transaction(function () use ($batch) {
+                $batch->delete();
+            });
 
-            // Find hospital by requested user's hospital ID
-            $hospitalRecord = Hospital::where('id', $request->user()->hospital_id)->first();
-
-            if (!$hospitalRecord) {
-                return response()->json(['message' => 'Hospital not found'], 404);
-            }
-
-            $batch = InventoryBatch::with('inventory')->find($id);
-
-            if (!$batch) {
-                return response()->json(['message' => 'Batch not found'], 404);
-            }
-
-            // Check if batch belongs to user's hospital
-            if ($batch->inventory->hospital_id != $hospitalRecord->id) {
-                return response()->json(['message' => 'Batch does not belong to your hospital'], 403);
-            }
-
-            $batch->delete();
-
-            // commit transaction
-            DB::commit();
             return response()->json(['message' => 'Batch deleted successfully'], 200);
         } catch (Exception $e) {
-            // rollback transaction
-            DB::rollBack();
             return response()->json(['message' => 'Error deleting batch', 'error' => $e->getMessage()], 500);
         }
+    }
+
+    private function authorizeBatchManagement($user, Inventories $inventory)
+    {
+        if ($user->hasRole('super_admin')) {
+            return null;
+        }
+
+        if (!$user->hospital_id || !Hospital::whereKey($user->hospital_id)->exists()) {
+            return response()->json(['message' => 'No valid hospital is assigned to your account'], 403);
+        }
+
+        if ((int) $inventory->hospital_id !== (int) $user->hospital_id) {
+            return response()->json(['message' => 'You cannot manage inventory batches for another hospital'], 403);
+        }
+
+        return null;
     }
 
     // release medicine to prescription (simplified - only updates prescription status)
