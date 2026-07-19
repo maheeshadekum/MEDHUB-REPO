@@ -53,18 +53,20 @@ const pharmacyDefaultValues: Pharmacy = {
 export const Pharmacies: FC = React.memo(() => {
   const [open, setOpen] = useState(false);
   const [showDetails, setShowDetails] = useState<boolean>(false);
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [district, setDistrict] = useState("");
   const [pagination, setPagination] = useState({
     currentPage: 1,
     pageSize: 20,
   });
-  const { data } = usePharmacies({
-    currentPage: pagination.currentPage,
-    pageSize: pagination.pageSize,
-    search,
-    district,
-  });
+  const { data, isPending, isFetching, isError, error, refetch } =
+    usePharmacies({
+      currentPage: pagination.currentPage,
+      pageSize: pagination.pageSize,
+      search,
+      district,
+    });
   const [selectedPharmacy, setSelectedPharmacy] = useState<Pharmacy | null>(
     null,
   );
@@ -75,13 +77,40 @@ export const Pharmacies: FC = React.memo(() => {
     setOpen(false);
   };
 
-  // reset current page when search is change
+  // Debounce the server-side name search and reset to the first page.
   useEffect(() => {
-    setPagination({
-      ...pagination,
-      currentPage: 1,
-    });
-  }, [search]);
+    const timer = window.setTimeout(() => {
+      setSearch(searchInput.trim());
+      setPagination((current) => ({ ...current, currentPage: 1 }));
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  // Keep the current page inside the range returned by the API.
+  useEffect(() => {
+    if (!data || isFetching) return;
+
+    const lastAvailablePage = Math.max(data.endPage, 1);
+    if (pagination.currentPage > lastAvailablePage) {
+      setPagination((current) => ({
+        ...current,
+        currentPage: lastAvailablePage,
+      }));
+    }
+  }, [data, isFetching, pagination.currentPage]);
+
+  const changeDistrict = (value: string) => {
+    setDistrict(value);
+    setPagination((current) => ({ ...current, currentPage: 1 }));
+  };
+
+  const resetFilters = () => {
+    setSearchInput("");
+    setSearch("");
+    setDistrict("");
+    setPagination((current) => ({ ...current, currentPage: 1 }));
+  };
 
   return (
     <div className="flex w-full flex-col">
@@ -100,10 +129,15 @@ export const Pharmacies: FC = React.memo(() => {
         <PharmacyTable
           columns={pharmacyColumns}
           data={data?.pharmacies || []}
-          search={search}
+          searchInput={searchInput}
           district={district}
-          setDistrict={setDistrict}
-          setSearch={setSearch}
+          isPending={isPending}
+          isFetching={isFetching}
+          isError={isError && Boolean(error)}
+          setDistrict={changeDistrict}
+          setSearchInput={setSearchInput}
+          resetFilters={resetFilters}
+          retry={() => void refetch()}
           setSelectedPharmacy={setSelectedPharmacy}
           setOpen={setOpen}
           setShowDetails={setShowDetails}
@@ -117,14 +151,14 @@ export const Pharmacies: FC = React.memo(() => {
             endPage: data?.endPage || 0,
           }}
         >
-          <PermissionWrapper permissions={[permissions.createHospitals]}>
+          <PermissionWrapper permissions={[permissions.managePharmacy]}>
             <Button
               size={"sm"}
               variant={"outline"}
               className="w-32"
               onClick={() => setOpen(true)}
             >
-              Add New
+              Add Outlet
             </Button>
           </PermissionWrapper>
         </PharmacyTable>
@@ -170,7 +204,7 @@ const PharmacyDialog: FC<{
       const updatedValues = { ...values, id: data.id };
       await updatePharmacy(updatedValues)
         .then(() => {
-          toast.success("Pharmacy updated", {
+          toast.success("Rajya Osusala outlet updated", {
             description: new Date().toLocaleString(),
           });
           form.reset();
@@ -179,14 +213,17 @@ const PharmacyDialog: FC<{
         .catch((error) => {
           setErrors(
             error?.response?.data?.errors || {
-              message: error?.response?.data?.message || "Something went wrong",
+              message:
+                error?.response?.data?.message ||
+                error?.response?.data?.error ||
+                "Unable to update the Rajya Osusala outlet",
             },
           );
         });
     } else {
       await createPharmacy(values)
         .then(() => {
-          toast.success("Pharmacy created", {
+          toast.success("Rajya Osusala outlet created", {
             description: new Date().toLocaleString(),
           });
           form.reset();
@@ -195,7 +232,10 @@ const PharmacyDialog: FC<{
         .catch((error) => {
           setErrors(
             error?.response?.data?.errors || {
-              message: error?.response?.data?.message || "Something went wrong",
+              message:
+                error?.response?.data?.message ||
+                error?.response?.data?.error ||
+                "Unable to add the Rajya Osusala outlet",
             },
           );
         });
@@ -214,20 +254,23 @@ const PharmacyDialog: FC<{
   return (
     <Dialog
       open={open}
-      onOpenChange={() => {
-        onClose();
-        form.reset(pharmacyDefaultValues);
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          onClose();
+          form.reset(pharmacyDefaultValues);
+          setErrors({});
+        }
       }}
     >
       <DialogContent className="max-h-[80vh] max-w-xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
-            {data ? "Edit Rajya Osusala Outlet" : "Create Rajya Osusala Outlet"}
+            {data ? "Edit Rajya Osusala Outlet" : "Add Rajya Osusala Outlet"}
           </DialogTitle>
           <DialogDescription>
             {data
               ? "Edit the details of the Rajya Osusala Outlet."
-              : "Fill in the details to create a new Rajya Osusala Outlet."}
+              : "Enter the details for the new Rajya Osusala outlet."}
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -241,7 +284,9 @@ const PharmacyDialog: FC<{
               name="name"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Name</FormLabel>
+                  <FormLabel>
+                    Name <span className="text-red-500">*</span>
+                  </FormLabel>
                   <FormControl>
                     <Input placeholder="Enter name" {...field} />
                   </FormControl>
@@ -258,7 +303,9 @@ const PharmacyDialog: FC<{
               name="address"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Address</FormLabel>
+                  <FormLabel>
+                    Address <span className="text-red-500">*</span>
+                  </FormLabel>
                   <FormControl>
                     <Textarea placeholder="Enter address" {...field} />
                   </FormControl>
@@ -275,7 +322,9 @@ const PharmacyDialog: FC<{
               name="phone"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Phone</FormLabel>
+                  <FormLabel>
+                    Phone <span className="text-red-500">*</span>
+                  </FormLabel>
                   <FormControl>
                     <Input placeholder="Enter phone" {...field} />
                   </FormControl>
@@ -292,7 +341,9 @@ const PharmacyDialog: FC<{
               name="email"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Email</FormLabel>
+                  <FormLabel>
+                    Email <span className="text-red-500">*</span>
+                  </FormLabel>
                   <FormControl>
                     <Input placeholder="Enter email" {...field} />
                   </FormControl>
@@ -309,7 +360,9 @@ const PharmacyDialog: FC<{
               name="district"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>District</FormLabel>
+                  <FormLabel>
+                    District <span className="text-red-500">*</span>
+                  </FormLabel>
                   <Select
                     onValueChange={field.onChange}
                     value={field.value === "" ? undefined : field.value}
@@ -344,7 +397,9 @@ const PharmacyDialog: FC<{
               name="location_url"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Location URL</FormLabel>
+                  <FormLabel>
+                    Location URL <span className="text-red-500">*</span>
+                  </FormLabel>
                   <FormControl>
                     <Input placeholder="Enter location URL" {...field} />
                   </FormControl>
@@ -373,7 +428,7 @@ const PharmacyDialog: FC<{
                 {(createPending || updatePending) && (
                   <PiSpinnerGapBold className="animate-spin" />
                 )}
-                Save Osusala Outlet
+                {data ? "Update Outlet" : "Save Outlet"}
               </Button>
             </div>
           </form>
@@ -391,9 +446,9 @@ const ShowDetails: FC<{
     <Dialog open={!!showDetails} onOpenChange={() => setShowDetails(false)}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Pharmacy Details</DialogTitle>
+          <DialogTitle>Rajya Osusala Outlet Details</DialogTitle>
           <DialogDescription className="sr-only">
-            Here are the details of the pharmacy you selected.
+            Details for the selected Rajya Osusala outlet.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-0.5 text-sm">

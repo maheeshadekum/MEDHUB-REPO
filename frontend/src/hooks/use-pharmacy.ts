@@ -13,20 +13,7 @@ export const usePharmacies = (data: {
 }) =>
   useQuery({
     queryKey: ["pharmacies", data],
-    queryFn: async () => {
-      try {
-        const pharmacies = await pharmaciesServices.getPharmacies(data);
-        return pharmacies;
-      } catch (error) {
-        return {
-          pharmacies: [],
-          total: 0,
-          from: 0,
-          to: 0,
-          endPage: 0,
-        };
-      }
-    },
+    queryFn: () => pharmaciesServices.getPharmacies(data),
     retry: false,
     refetchOnWindowFocus: false,
   });

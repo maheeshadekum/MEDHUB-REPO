@@ -18,6 +18,7 @@ export const pharmacyColumns: ColumnDef<Pharmacy>[] = [
   {
     accessorKey: "name",
     header: "Name",
+    enableHiding: false,
     cell: ({ row }) => <span>{row.getValue("name")}</span>,
   },
   {
@@ -56,6 +57,7 @@ export const pharmacyColumns: ColumnDef<Pharmacy>[] = [
   },
   {
     id: "actions",
+    enableHiding: false,
     cell: ({ table, row }) => {
       const meta = table.options.meta as {
         setOpen: (open: boolean) => void;
@@ -66,8 +68,14 @@ export const pharmacyColumns: ColumnDef<Pharmacy>[] = [
       return (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="h-8 w-8 p-0">
-              <span className="sr-only">Open menu</span>
+            <Button
+              variant="ghost"
+              className="h-8 w-8 p-0"
+              aria-label={`Open actions for ${row.original.name}`}
+            >
+              <span className="sr-only">
+                Open actions for {row.original.name}
+              </span>
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -77,21 +85,21 @@ export const pharmacyColumns: ColumnDef<Pharmacy>[] = [
             <PermissionWrapper permissions={[permissions.managePharmacy]}>
               <DropdownMenuItem
                 onClick={() => {
+                  setShowDetails(true);
                   setSelectedPharmacy(row.original);
-                  setOpen(true);
                 }}
               >
-                Edit Pharmacy
+                View Details
               </DropdownMenuItem>
             </PermissionWrapper>
             <PermissionWrapper permissions={[permissions.managePharmacy]}>
               <DropdownMenuItem
                 onClick={() => {
-                  setShowDetails(true);
                   setSelectedPharmacy(row.original);
+                  setOpen(true);
                 }}
               >
-                More Details
+                Edit Outlet
               </DropdownMenuItem>
             </PermissionWrapper>
           </DropdownMenuContent>

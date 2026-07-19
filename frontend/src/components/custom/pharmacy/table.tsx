@@ -7,6 +7,7 @@ import type {
 } from "@tanstack/react-table";
 
 import { Pagination } from "@/components/custom";
+import { TableState } from "@/components/custom/table-state";
 import {
   Button,
   DropdownMenu,
@@ -14,6 +15,7 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
   Input,
+  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -40,9 +42,14 @@ import { useState } from "react";
 interface PharmacyTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
-  search: string;
+  searchInput: string;
   district: string;
-  setSearch: (search: string) => void;
+  isPending: boolean;
+  isError: boolean;
+  isFetching: boolean;
+  setSearchInput: (search: string) => void;
+  resetFilters: () => void;
+  retry: () => void;
   setOpen: (open: boolean) => void;
   setDistrict: (district: string) => void;
   setShowDetails: (show: boolean) => void;
@@ -68,11 +75,16 @@ interface PharmacyTableProps<TData, TValue> {
 export function PharmacyTable<TData, TValue>({
   columns,
   data,
-  search,
+  searchInput,
   district,
+  isPending,
+  isError,
+  isFetching,
   setDistrict,
   setOpen,
-  setSearch,
+  setSearchInput,
+  resetFilters,
+  retry,
   setSelectedPharmacy,
   setShowDetails,
   setPagination,
@@ -103,44 +115,68 @@ export function PharmacyTable<TData, TValue>({
       setShowDetails,
     },
   });
+  const visibleColumnCount = table.getVisibleLeafColumns().length;
+  const hasActiveFilters = searchInput.trim().length > 0 || district !== "";
+  const hasRows = table.getRowModel().rows.length > 0;
+  const showTrueEmpty = !isPending && !isError && !hasRows && !hasActiveFilters;
+  const showFilteredEmpty =
+    !isPending && !isError && !hasRows && hasActiveFilters;
+  const showPagination = !isPending && !isError && pagination.total > 0;
 
   return (
     <div className="w-full">
       <div className="mb-5 flex flex-col items-center justify-center gap-3 sm:flex-row sm:justify-between">
-        <div className="flex items-center space-x-2">
-          <Input
-            placeholder="Filter data..."
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            className="w-full sm:max-w-sm !ring-0"
-          />
+        <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="w-full sm:max-w-sm">
+            <Label htmlFor="outlet-search" className="sr-only">
+              Search outlets by name
+            </Label>
+            <Input
+              id="outlet-search"
+              type="search"
+              aria-label="Search outlets by name"
+              placeholder="Search outlets by name"
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              className="w-full !ring-0"
+            />
+          </div>
 
-          <Select
-            value={district === "" ? undefined : district}
-            onValueChange={(value) =>
-              setDistrict(value === "default" ? "" : value)
-            }
-          >
-            <SelectTrigger className="w-40 cursor-pointer" id="rows-per-page">
-              <SelectValue placeholder={"Select District"} />
-            </SelectTrigger>
-            <SelectContent side="top" className="max-h-60 overflow-y-auto">
-              <SelectItem value="default">All Districts</SelectItem>
-              {districts.map((district) => (
-                <SelectItem
-                  key={district}
-                  value={district}
-                  className="capitalize"
-                >
-                  {district}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div>
+            <Label htmlFor="outlet-district" className="sr-only">
+              Filter outlets by district
+            </Label>
+            <Select
+              value={district === "" ? undefined : district}
+              onValueChange={(value) =>
+                setDistrict(value === "default" ? "" : value)
+              }
+            >
+              <SelectTrigger
+                className="w-full cursor-pointer sm:w-40"
+                id="outlet-district"
+                aria-label="Filter outlets by district"
+              >
+                <SelectValue placeholder="Select District" />
+              </SelectTrigger>
+              <SelectContent side="top" className="max-h-60 overflow-y-auto">
+                <SelectItem value="default">All Districts</SelectItem>
+                {districts.map((district) => (
+                  <SelectItem
+                    key={district}
+                    value={district}
+                    className="capitalize"
+                  >
+                    {district}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         <div className="flex gap-2 w-full justify-between sm:w-fit">
-          {children}
+          {!showTrueEmpty && children}
           <DropdownMenu>
             <DropdownMenuTrigger asChild className="w-32 h-8">
               <Button variant="outline" className="">
@@ -170,7 +206,13 @@ export function PharmacyTable<TData, TValue>({
         </div>
       </div>
 
-      <div className="w-full overflow-hidden rounded-md border border-gray-200">
+      {isFetching && !isPending && !isError && (
+        <p className="sr-only" role="status" aria-live="polite">
+          Refreshing Rajya Osusala outlets.
+        </p>
+      )}
+
+      <div className="w-full overflow-x-auto rounded-md border border-gray-200">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
@@ -191,7 +233,25 @@ export function PharmacyTable<TData, TValue>({
             ))}
           </TableHeader>
           <TableBody>
-            {table.getRowModel().rows?.length ? (
+            {isPending ? (
+              <TableState
+                state="loading"
+                colSpan={visibleColumnCount}
+                title="Loading Rajya Osusala outlets..."
+              />
+            ) : isError ? (
+              <TableState
+                state="error"
+                colSpan={visibleColumnCount}
+                title="Unable to load Rajya Osusala outlets."
+                description="Please try again."
+                action={
+                  <Button type="button" variant="outline" onClick={retry}>
+                    Retry
+                  </Button>
+                }
+              />
+            ) : hasRows ? (
               table.getRowModel().rows.map((row) => (
                 <TableRow
                   key={row.id}
@@ -207,34 +267,50 @@ export function PharmacyTable<TData, TValue>({
                   ))}
                 </TableRow>
               ))
+            ) : showFilteredEmpty ? (
+              <TableState
+                state="filtered-empty"
+                colSpan={visibleColumnCount}
+                title="No outlets match the current search or filters."
+                action={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={resetFilters}
+                  >
+                    Reset Filters
+                  </Button>
+                }
+              />
             ) : (
-              <TableRow>
-                <TableCell
-                  colSpan={columns.length}
-                  className="h-24 text-center"
-                >
-                  No results.
-                </TableCell>
-              </TableRow>
+              <TableState
+                state="empty"
+                colSpan={visibleColumnCount}
+                title="No Rajya Osusala outlets have been added yet."
+                description="Add an outlet to begin managing locations."
+                action={showTrueEmpty ? children : undefined}
+              />
             )}
           </TableBody>
         </Table>
       </div>
 
       {/* pagination */}
-      <div className="my-4 w-full">
-        <Pagination
-          setPagination={setPagination}
-          pagination={{
-            currentPage: pagination.currentPage,
-            pageSize: pagination.pageSize,
-            from: pagination?.from || 0,
-            to: pagination?.to || 0,
-            total: pagination?.total || 0,
-            endPage: pagination?.endPage || 0,
-          }}
-        />
-      </div>
+      {showPagination && (
+        <div className="my-4 w-full">
+          <Pagination
+            setPagination={setPagination}
+            pagination={{
+              currentPage: pagination.currentPage,
+              pageSize: pagination.pageSize,
+              from: pagination?.from || 0,
+              to: pagination?.to || 0,
+              total: pagination?.total || 0,
+              endPage: pagination?.endPage || 0,
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }
