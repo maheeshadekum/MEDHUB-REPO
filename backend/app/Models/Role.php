@@ -9,9 +9,28 @@ class Role extends Model
 {
     use HasFactory;
 
+    public const SYSTEM_ROLE_NAMES = [
+        'super_admin',
+        'hospital_admin',
+        'doctor',
+        'pharmacist',
+        'receptionist',
+        'patient',
+    ];
+
     protected $fillable = [
         'name',
     ];
+
+    public function isSystem(): bool
+    {
+        return self::isSystemName($this->name);
+    }
+
+    public static function isSystemName(string $name): bool
+    {
+        return in_array(strtolower(trim($name)), self::SYSTEM_ROLE_NAMES, true);
+    }
 
     public function permissions()
     {

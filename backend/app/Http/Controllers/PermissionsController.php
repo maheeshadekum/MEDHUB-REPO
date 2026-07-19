@@ -34,20 +34,28 @@ class PermissionsController extends Controller
     // create new permission
     public function createPermission(Request $request)
     {
+        if (!$request->user()?->hasRole('super_admin')) {
+            return response()->json(['message' => 'Only a super admin can create permissions'], 403);
+        }
+
+        $request->merge(['name' => trim((string) $request->input('name', ''))]);
+
         // start transaction
         DB::beginTransaction();
 
         try {
             // validate request data
-            $request->validate([
-                'name' => 'required|string|unique:permissions,name',
+            $validated = $request->validate([
+                'name' => ['required', 'string', 'max:255'],
                 'description' => 'required|string|max:255',
             ]);
 
+            $this->validateAvailableName($validated['name']);
+
             // create new permission
             $permission = new Permission([
-                'name' => $request->name,
-                'description' => $request->description,
+                'name' => $validated['name'],
+                'description' => $validated['description'],
             ]);
             $permission->save();
 
@@ -59,31 +67,44 @@ class PermissionsController extends Controller
             DB::rollBack();
             return response()->json([
                 'message' => $e->validator->errors()->first()
-            ], 400);
+            ], 422);
         } catch (Exception $e) {
             // rollback transaction on error
             DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['message' => 'Unable to create permission'], 500);
         }
     }
 
     // update permission
     public function updatePermission(Request $request, $id)
     {
+        if (!$request->user()?->hasRole('super_admin')) {
+            return response()->json(['message' => 'Only a super admin can update permissions'], 403);
+        }
+
+        $permission = Permission::findOrFail($id);
+        $request->merge(['name' => trim((string) $request->input('name', ''))]);
+
         // start transaction
         DB::beginTransaction();
 
         try {
             // validate request data
-            $request->validate([
-                'name' => 'required|string|unique:permissions,name,' . $id,
+            $validated = $request->validate([
+                'name' => ['required', 'string', 'max:255'],
                 'description' => 'required|string|max:255',
             ]);
 
-            // find permission by id
-            $permission = Permission::findOrFail($id);
-            $permission->name = $request->name;
-            $permission->description = $request->description;
+            if ($permission->isProtectedAdministrative() && $validated['name'] !== $permission->name) {
+                throw ValidationException::withMessages([
+                    'name' => ['Protected administrative permission names cannot be changed'],
+                ]);
+            }
+
+            $this->validateAvailableName($validated['name'], $permission);
+
+            $permission->name = $validated['name'];
+            $permission->description = $validated['description'];
             $permission->save();
 
             // commit transaction
@@ -94,11 +115,26 @@ class PermissionsController extends Controller
             DB::rollBack();
             return response()->json([
                 'message' => $e->validator->errors()->first()
-            ], 400);
+            ], 422);
         } catch (Exception $e) {
             // rollback transaction on error
             DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['message' => 'Unable to update permission'], 500);
+        }
+    }
+
+    private function validateAvailableName(string $name, ?Permission $currentPermission = null): void
+    {
+        $query = Permission::whereRaw('LOWER(name) = ?', [strtolower($name)]);
+
+        if ($currentPermission) {
+            $query->whereKeyNot($currentPermission->id);
+        }
+
+        if ($query->exists()) {
+            throw ValidationException::withMessages([
+                'name' => ['The permission name has already been taken'],
+            ]);
         }
     }
 }

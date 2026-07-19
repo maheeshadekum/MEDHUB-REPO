@@ -34,18 +34,26 @@ class RolesController extends Controller
     // create new role
     public function createRole(Request $request)
     {
+        if (!$request->user()?->hasRole('super_admin')) {
+            return response()->json(['message' => 'Only a super admin can create roles'], 403);
+        }
+
+        $request->merge(['name' => trim((string) $request->input('name', ''))]);
+
         // start transaction
         DB::beginTransaction();
 
         try {
             // validate request data
-            $request->validate([
-                'name' => 'required|string|unique:roles,name',
+            $validated = $request->validate([
+                'name' => ['required', 'string', 'max:255'],
             ]);
+
+            $this->validateAvailableCustomName($validated['name']);
 
             // create new role
             $role = new Role([
-                'name' => $request->name,
+                'name' => $validated['name'],
             ]);
             $role->save();
 
@@ -57,11 +65,11 @@ class RolesController extends Controller
             DB::rollBack();
             return response()->json([
                 'message' => $e->validator->errors()->first()
-            ], 400);
+            ], 422);
         } catch (Exception $e) {
             // rollback transaction on error
             DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['message' => 'Unable to create role'], 500);
         }
     }
 
@@ -74,16 +82,28 @@ class RolesController extends Controller
     // update role
     public function updateRole(Request $request, Role $role)
     {
+        if (!$request->user()?->hasRole('super_admin')) {
+            return response()->json(['message' => 'Only a super admin can update roles'], 403);
+        }
+
+        if ($role->isSystem()) {
+            return response()->json(['message' => 'System roles cannot be renamed'], 422);
+        }
+
+        $request->merge(['name' => trim((string) $request->input('name', ''))]);
+
         // start transaction
         DB::beginTransaction();
 
         try {
             // validate request data
-            $request->validate([
-                'name' => 'required|string|unique:roles,name,' . $role->id,
+            $validated = $request->validate([
+                'name' => ['required', 'string', 'max:255'],
             ]);
 
-            $role->name = $request->name;
+            $this->validateAvailableCustomName($validated['name'], $role);
+
+            $role->name = $validated['name'];
             $role->save();
 
             // commit transaction
@@ -94,36 +114,31 @@ class RolesController extends Controller
             DB::rollBack();
             return response()->json([
                 'message' => $e->validator->errors()->first()
-            ], 400);
+            ], 422);
         } catch (Exception $e) {
             // rollback transaction on error
             DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['message' => 'Unable to update role'], 500);
         }
     }
 
     // delete role
-    public function deleteRole(Role $role)
+    public function deleteRole(Request $request, Role $role)
     {
-        $systemRoles = [
-            'super_admin',
-            'hospital_admin',
-            'doctor',
-            'pharmacist',
-            'receptionist',
-            'patient',
-        ];
+        if (!$request->user()?->hasRole('super_admin')) {
+            return response()->json(['message' => 'Only a super admin can delete roles'], 403);
+        }
 
-        if (in_array($role->name, $systemRoles, true)) {
+        if ($role->isSystem()) {
             return response()->json([
                 'message' => 'System roles cannot be deleted',
-            ], 400);
+            ], 422);
         }
 
         if ($role->users()->exists()) {
             return response()->json([
                 'message' => 'Cannot delete a role that is assigned to users',
-            ], 400);
+            ], 422);
         }
 
         DB::beginTransaction();
@@ -137,7 +152,28 @@ class RolesController extends Controller
         } catch (Exception $e) {
             DB::rollBack();
 
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['message' => 'Unable to delete role'], 500);
+        }
+    }
+
+    private function validateAvailableCustomName(string $name, ?Role $currentRole = null): void
+    {
+        if (Role::isSystemName($name)) {
+            throw ValidationException::withMessages([
+                'name' => ['System role names are reserved'],
+            ]);
+        }
+
+        $query = Role::whereRaw('LOWER(name) = ?', [strtolower($name)]);
+
+        if ($currentRole) {
+            $query->whereKeyNot($currentRole->id);
+        }
+
+        if ($query->exists()) {
+            throw ValidationException::withMessages([
+                'name' => ['The role name has already been taken'],
+            ]);
         }
     }
 }

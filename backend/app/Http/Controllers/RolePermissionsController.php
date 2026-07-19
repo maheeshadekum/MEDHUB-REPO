@@ -40,37 +40,42 @@ class RolePermissionsController extends Controller
     // Assign permissions to a role
     public function assignPermission(Request $request, $id)
     {
-        try {
-            // start transaction
-            DB::beginTransaction();
+        if (!$request->user()?->hasRole('super_admin')) {
+            return response()->json(['message' => 'Only a super admin can assign permissions'], 403);
+        }
 
+        $permission = Permission::findOrFail($id);
+
+        try {
             // Validate request data
-            $request->validate([
+            $validated = $request->validate([
                 'permission_ids' => 'required|array',
-                'permission_ids.*' => 'exists:permissions,id',
+                'permission_ids.*' => 'integer|exists:roles,id',
             ]);
 
-            // get the permission by id
-            $permission = Permission::find($id);
+            $roleIds = array_values(array_unique($validated['permission_ids']));
 
-            // Check if permission exists
-            if (!$permission) {
-                return response()->json(['message' => 'Permission not found'], 404);
+            if ($permission->isProtectedAdministrative()) {
+                $superAdminRoleId = Role::where('name', 'super_admin')->value('id');
+
+                if (!$superAdminRoleId || !in_array($superAdminRoleId, $roleIds, true)) {
+                    throw ValidationException::withMessages([
+                        'permission_ids' => ['The super admin role must retain this protected permission'],
+                    ]);
+                }
             }
 
-            $permission->roles()->sync($request->permission_ids);
+            DB::transaction(function () use ($permission, $roleIds) {
+                $permission->roles()->sync($roleIds);
+            });
 
-            DB::commit();
-
-            return response()->json($permission->roles);
+            return response()->json($permission->roles()->get());
         } catch (ValidationException $e) {
-            DB::rollBack();
             return response()->json([
                 'message' => $e->validator->errors()->first()
-            ], 400);
+            ], 422);
         } catch (Exception $e) {
-            DB::rollBack();
-            return response()->json(['message' => 'Error assigning permissions', 'error' => $e->getMessage()], 500);
+            return response()->json(['message' => 'Error assigning permissions'], 500);
         }
     }
 }
