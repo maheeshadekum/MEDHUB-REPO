@@ -18,11 +18,7 @@ export const RolesPage = () => {
   return (
     <PrivateRoute>
       <PermissionWrapper
-        permissions={[
-          permissions.viewRoles,
-          permissions.createRoles,
-          permissions.updateRoles,
-        ]}
+        permissions={[permissions.viewRoles]}
         is404
       >
         <Suspense fallback={<Loader />}>

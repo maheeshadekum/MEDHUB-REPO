@@ -7,6 +7,7 @@ import type {
 } from "@tanstack/react-table";
 
 import { Pagination } from "@/components/custom";
+import { TableState } from "@/components/custom/table-state";
 import {
   Button,
   DropdownMenu,
@@ -14,6 +15,7 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
   Input,
+  Label,
   Table,
   TableBody,
   TableCell,
@@ -34,8 +36,13 @@ import { useState } from "react";
 interface RoleTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
-  search: string;
-  setSearch: (search: string) => void;
+  searchInput: string;
+  isPending: boolean;
+  isFetching: boolean;
+  isError: boolean;
+  setSearchInput: (search: string) => void;
+  clearSearch: () => void;
+  retry: () => void;
   setOpen: (open: boolean) => void;
   setShowDetails: (show: boolean) => void;
   setSelectedRole: (role: Role) => void;
@@ -60,8 +67,13 @@ interface RoleTableProps<TData, TValue> {
 export function RoleTable<TData, TValue>({
   columns,
   data,
-  search,
-  setSearch,
+  searchInput,
+  isPending,
+  isFetching,
+  isError,
+  setSearchInput,
+  clearSearch,
+  retry,
   setOpen,
   setSelectedRole,
   setShowDetails,
@@ -93,19 +105,34 @@ export function RoleTable<TData, TValue>({
       setShowDetails,
     },
   });
+  const visibleColumnCount = table.getVisibleLeafColumns().length;
+  const hasActiveSearch = searchInput.trim().length > 0;
+  const hasRows = table.getRowModel().rows.length > 0;
+  const showTrueEmpty = !isPending && !isError && !hasRows && !hasActiveSearch;
+  const showFilteredEmpty =
+    !isPending && !isError && !hasRows && hasActiveSearch;
+  const showPagination = !isPending && !isError && pagination.total > 0;
 
   return (
     <div className="w-full">
       <div className="mb-5 flex flex-col items-center justify-center gap-3 sm:flex-row sm:justify-between">
-        <Input
-          placeholder="Filter roles..."
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          className="w-full sm:max-w-sm !ring-0"
-        />
+        <div className="w-full sm:max-w-sm">
+          <Label htmlFor="role-search" className="sr-only">
+            Search roles by name
+          </Label>
+          <Input
+            id="role-search"
+            type="search"
+            aria-label="Search roles by name"
+            placeholder="Search roles by name"
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
+            className="w-full !ring-0"
+          />
+        </div>
 
         <div className="flex gap-2 w-full justify-between sm:w-fit">
-          {children}
+          {!showTrueEmpty && children}
           <DropdownMenu>
             <DropdownMenuTrigger asChild className="w-32 h-8">
               <Button variant="outline">
@@ -135,7 +162,13 @@ export function RoleTable<TData, TValue>({
         </div>
       </div>
 
-      <div className="w-full overflow-hidden rounded-md border border-gray-200">
+      {isFetching && !isPending && !isError && (
+        <p className="sr-only" role="status" aria-live="polite">
+          Refreshing roles.
+        </p>
+      )}
+
+      <div className="w-full overflow-x-auto rounded-md border border-gray-200">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
@@ -156,7 +189,25 @@ export function RoleTable<TData, TValue>({
             ))}
           </TableHeader>
           <TableBody>
-            {table.getRowModel().rows?.length ? (
+            {isPending ? (
+              <TableState
+                state="loading"
+                colSpan={visibleColumnCount}
+                title="Loading roles..."
+              />
+            ) : isError ? (
+              <TableState
+                state="error"
+                colSpan={visibleColumnCount}
+                title="Unable to load roles."
+                description="Please try again."
+                action={
+                  <Button type="button" variant="outline" onClick={retry}>
+                    Retry
+                  </Button>
+                }
+              />
+            ) : hasRows ? (
               table.getRowModel().rows.map((row) => (
                 <TableRow
                   key={row.id}
@@ -172,34 +223,50 @@ export function RoleTable<TData, TValue>({
                   ))}
                 </TableRow>
               ))
+            ) : showFilteredEmpty ? (
+              <TableState
+                state="filtered-empty"
+                colSpan={visibleColumnCount}
+                title="No roles match the current search."
+                action={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={clearSearch}
+                  >
+                    Clear Search
+                  </Button>
+                }
+              />
             ) : (
-              <TableRow>
-                <TableCell
-                  colSpan={columns.length}
-                  className="h-24 text-center"
-                >
-                  No results.
-                </TableCell>
-              </TableRow>
+              <TableState
+                state="empty"
+                colSpan={visibleColumnCount}
+                title="No roles have been added yet."
+                description="Add a role to begin managing access groups."
+                action={showTrueEmpty ? children : undefined}
+              />
             )}
           </TableBody>
         </Table>
       </div>
 
       {/* pagination */}
-      <div className="my-4 w-full">
-        <Pagination
-          setPagination={setPagination}
-          pagination={{
-            currentPage: pagination.currentPage,
-            pageSize: pagination.pageSize,
-            from: pagination?.from || 0,
-            to: pagination?.to || 0,
-            total: pagination?.total || 0,
-            endPage: pagination?.endPage || 0,
-          }}
-        />
-      </div>
+      {showPagination && (
+        <div className="my-4 w-full">
+          <Pagination
+            setPagination={setPagination}
+            pagination={{
+              currentPage: pagination.currentPage,
+              pageSize: pagination.pageSize,
+              from: pagination?.from || 0,
+              to: pagination?.to || 0,
+              total: pagination?.total || 0,
+              endPage: pagination?.endPage || 0,
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }

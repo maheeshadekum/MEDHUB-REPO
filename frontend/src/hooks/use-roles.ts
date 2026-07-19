@@ -12,20 +12,7 @@ export const useRoles = (data: {
 }) =>
   useQuery({
     queryKey: ["roles", data],
-    queryFn: async () => {
-      try {
-        const roles = await rolesServices.getRoles(data);
-        return roles;
-      } catch (error) {
-        return {
-          roles: [],
-          total: 0,
-          from: 0,
-          to: 0,
-          endPage: 0,
-        };
-      }
-    },
+    queryFn: () => rolesServices.getRoles(data),
     retry: false,
     refetchOnWindowFocus: false,
   });

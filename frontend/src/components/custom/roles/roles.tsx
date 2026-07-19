@@ -35,15 +35,30 @@ const roleDefaultValues: Role = {
   name: "",
 };
 
+const SYSTEM_ROLE_NAMES = [
+  "super_admin",
+  "hospital_admin",
+  "doctor",
+  "pharmacist",
+  "receptionist",
+  "patient",
+] as const;
+
+const isSystemRole = (roleName: string) =>
+  SYSTEM_ROLE_NAMES.includes(
+    roleName as (typeof SYSTEM_ROLE_NAMES)[number],
+  );
+
 export const Roles: FC = React.memo(() => {
   const [open, setOpen] = useState(false);
   const [showDetails, setShowDetails] = useState<boolean>(false);
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [pagination, setPagination] = useState({
     currentPage: 1,
     pageSize: 20,
   });
-  const { data } = useRoles({
+  const { data, isPending, isFetching, isError, error, refetch } = useRoles({
     currentPage: pagination.currentPage,
     pageSize: pagination.pageSize,
     search,
@@ -54,6 +69,33 @@ export const Roles: FC = React.memo(() => {
   const closeDialog = () => {
     setSelectedRole(null);
     setOpen(false);
+  };
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSearch(searchInput.trim());
+      setPagination((current) => ({ ...current, currentPage: 1 }));
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
+    if (!data || isFetching) return;
+
+    const lastAvailablePage = Math.max(data.endPage, 1);
+    if (pagination.currentPage > lastAvailablePage) {
+      setPagination((current) => ({
+        ...current,
+        currentPage: lastAvailablePage,
+      }));
+    }
+  }, [data, isFetching, pagination.currentPage]);
+
+  const clearSearch = () => {
+    setSearchInput("");
+    setSearch("");
+    setPagination((current) => ({ ...current, currentPage: 1 }));
   };
 
   return (
@@ -69,8 +111,13 @@ export const Roles: FC = React.memo(() => {
         <RoleTable
           columns={roleColumns}
           data={data?.roles || []}
-          search={search}
-          setSearch={setSearch}
+          searchInput={searchInput}
+          isPending={isPending}
+          isFetching={isFetching}
+          isError={isError && Boolean(error)}
+          setSearchInput={setSearchInput}
+          clearSearch={clearSearch}
+          retry={() => void refetch()}
           setSelectedRole={setSelectedRole}
           setOpen={setOpen}
           setShowDetails={setShowDetails}
@@ -91,7 +138,7 @@ export const Roles: FC = React.memo(() => {
               className="w-32"
               onClick={() => setOpen(true)}
             >
-              Add New
+              Add Role
             </Button>
           </PermissionWrapper>
         </RoleTable>
@@ -140,7 +187,10 @@ const RoleDialog: FC<{
         .catch((error) => {
           setErrors(
             error?.response?.data?.errors || {
-              message: error?.response?.data?.message || "Something went wrong",
+              message:
+                error?.response?.data?.message ||
+                error?.response?.data?.error ||
+                "Unable to update the role",
             },
           );
         });
@@ -156,7 +206,10 @@ const RoleDialog: FC<{
         .catch((error) => {
           setErrors(
             error?.response?.data?.errors || {
-              message: error?.response?.data?.message || "Something went wrong",
+              message:
+                error?.response?.data?.message ||
+                error?.response?.data?.error ||
+                "Unable to add the role",
             },
           );
         });
@@ -175,18 +228,21 @@ const RoleDialog: FC<{
   return (
     <Dialog
       open={open}
-      onOpenChange={() => {
-        onClose();
-        form.reset(roleDefaultValues);
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          onClose();
+          form.reset(roleDefaultValues);
+          setErrors({});
+        }
       }}
     >
       <DialogContent className="max-h-[80vh] max-w-xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{data ? "Edit Role" : "Create Role"}</DialogTitle>
+          <DialogTitle>{data ? "Edit Role" : "Add Role"}</DialogTitle>
           <DialogDescription>
             {data
               ? "Edit the details of the role."
-              : "Fill in the details to create a new role."}
+              : "Enter a name for the new role."}
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -200,7 +256,9 @@ const RoleDialog: FC<{
               name="name"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Name</FormLabel>
+                  <FormLabel>
+                    Name <span className="text-red-500">*</span>
+                  </FormLabel>
                   <FormControl>
                     <Input placeholder="Enter role name" {...field} />
                   </FormControl>
@@ -229,7 +287,7 @@ const RoleDialog: FC<{
                 {(createPending || updatePending) && (
                   <PiSpinnerGapBold className="animate-spin" />
                 )}
-                Save Role
+                {data ? "Update Role" : "Save Role"}
               </Button>
             </div>
           </form>
@@ -258,6 +316,15 @@ const ShowDetails: FC<{
           </div>
           <div>
             <span className="font-medium">Name:</span> {showDetails?.name}
+          </div>
+          <div>
+            <span className="font-medium">Type:</span>{" "}
+            {showDetails && isSystemRole(showDetails.name)
+              ? "System role"
+              : "Custom role"}
+            <span className="sr-only">
+              Classification is derived from the documented seeded role name.
+            </span>
           </div>
           <div>
             <span className="font-medium">Created at:</span>{" "}
