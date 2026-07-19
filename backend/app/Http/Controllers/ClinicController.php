@@ -4,8 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Models\Clinic;
 use App\Models\Hospital;
+use App\Models\Patient;
 use App\Models\User;
 use Exception;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -23,24 +26,24 @@ class ClinicController extends Controller
         $pageNumber = $request->input('page', 1);
         $hospitalId = $request->input('hospital_id');
 
-        $query = Clinic::with(['hospital:id,name', 'doctor:id,name,email']);
-
-        $scopedHospitalId = $this->getClinicOptionHospitalScope($request);
-
-        if ($scopedHospitalId === false) {
-            return response()->json(['message' => 'A hospital assignment is required'], 403);
+        $scope = $this->resolveClinicReadScope($request);
+        if ($scope instanceof JsonResponse) {
+            return $scope;
         }
 
-        // Filter by hospital if provided
-        if (is_int($scopedHospitalId)) {
-            if ($hospitalId !== null && (int) $hospitalId !== $scopedHospitalId) {
-                return response()->json([
-                    'message' => 'You can only view clinics in your hospital'
-                ], 403);
-            }
+        if ($hospitalId !== null && !$this->canUseHospitalFilter($scope, (int) $hospitalId)) {
+            return response()->json([
+                'message' => 'You can only view clinics in your authorized scope'
+            ], 403);
+        }
 
-            $query->where('hospital_id', $scopedHospitalId);
-        } elseif ($hospitalId) {
+        $query = $this->applyClinicReadScope(
+            Clinic::with(['hospital:id,name', 'doctor:id,name,email']),
+            $scope
+        );
+
+        // An approved hospital filter can only narrow the authorized query.
+        if ($hospitalId) {
             $query->where('hospital_id', $hospitalId);
         }
 
@@ -138,12 +141,20 @@ class ClinicController extends Controller
     /**
      * Display the specified resource.
      */
-    public function show($id)
+    public function show($id, Request $request)
     {
-        $clinic = Clinic::find($id);
-
-        if (!$clinic) {
+        if (!Clinic::whereKey($id)->exists()) {
             return response()->json(['message' => 'Clinic not found'], 404);
+        }
+
+        $scope = $this->resolveClinicReadScope($request);
+        if ($scope instanceof JsonResponse) {
+            return $scope;
+        }
+
+        $clinic = $this->applyClinicReadScope(Clinic::query(), $scope)->find($id);
+        if (!$clinic) {
+            return response()->json(['message' => 'Forbidden'], 403);
         }
 
         // Load relationships
@@ -298,13 +309,16 @@ class ClinicController extends Controller
             return response()->json(['message' => 'Hospital not found'], 404);
         }
 
-        $scopedHospitalId = $this->getClinicOptionHospitalScope($request);
-
-        if ($scopedHospitalId === false) {
-            return response()->json(['message' => 'A hospital assignment is required'], 403);
+        $scope = $this->resolveClinicReadScope($request);
+        if ($scope instanceof JsonResponse) {
+            return $scope;
         }
 
-        if (is_int($scopedHospitalId) && $scopedHospitalId !== (int) $hospitalId) {
+        if (!in_array($scope['type'], ['global', 'hospital'], true)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($scope['type'] === 'hospital' && $scope['hospital_id'] !== (int) $hospitalId) {
             return response()->json([
                 'message' => 'You can only view clinics in your hospital'
             ], 403);
@@ -329,20 +343,31 @@ class ClinicController extends Controller
             return response()->json(['message' => 'Doctor not found'], 404);
         }
 
-        // Check if user has permission to view clinics
-        if ($request->user()->role->name === 'hospital_admin') {
-            $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-            $doctorHospitalIds = $doctor->hospitals->pluck('id')->toArray();
+        $scope = $this->resolveClinicReadScope($request);
+        if ($scope instanceof JsonResponse) {
+            return $scope;
+        }
 
-            if (!in_array($userHospitalId, $doctorHospitalIds)) {
+        if ($scope['type'] === 'doctor') {
+            if ($scope['doctor_id'] !== (int) $doctorId) {
+                return response()->json([
+                    'message' => 'You can only view your assigned clinics'
+                ], 403);
+            }
+        } elseif ($scope['type'] === 'hospital') {
+            if ((int) $doctor->hospital_id !== $scope['hospital_id']) {
                 return response()->json([
                     'message' => 'You can only view clinics for doctors in your hospital'
                 ], 403);
             }
+        } elseif ($scope['type'] !== 'global') {
+            return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        $clinics = Clinic::with(['hospital:id,name'])
-            ->where('doctor_id', $doctorId)
+        $clinics = $this->applyClinicReadScope(
+            Clinic::with(['hospital:id,name']),
+            $scope
+        )->where('doctor_id', $doctorId)
             ->orderBy('name')
             ->get();
 
@@ -386,16 +411,95 @@ class ClinicController extends Controller
     }
 
     /**
-     * Resolve Hospital-scoped Clinic option access for approved staff roles.
+     * Resolve the authoritative Clinic read scope for the authenticated user.
+     *
+     * @return array{type: string, hospital_id?: int, doctor_id?: int, patient_id?: int}|JsonResponse
      */
-    private function getClinicOptionHospitalScope(Request $request): int|false|null
+    private function resolveClinicReadScope(Request $request): array|JsonResponse
     {
         $user = $request->user();
+        $role = $user->role?->name;
 
-        if (!in_array($user->role?->name, ['hospital_admin', 'receptionist'], true)) {
-            return null;
+        if ($role === 'super_admin') {
+            return ['type' => 'global'];
         }
 
-        return $user->hospital_id ? (int) $user->hospital_id : false;
+        if (in_array($role, ['hospital_admin', 'receptionist'], true)) {
+            return $this->hospitalScopeOrForbidden($user->hospital_id);
+        }
+
+        if ($role === 'doctor') {
+            return [
+                'type' => 'doctor',
+                'doctor_id' => (int) $user->id,
+                'hospital_id' => $user->hospital_id ? (int) $user->hospital_id : null,
+            ];
+        }
+
+        if ($role === 'pharmacist') {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($role === 'patient') {
+            $patientId = Patient::where('user_id', $user->id)->value('id');
+            if (!$patientId) {
+                return response()->json(['message' => 'A patient profile is required'], 403);
+            }
+
+            return ['type' => 'patient', 'patient_id' => (int) $patientId];
+        }
+
+        return $this->hospitalScopeOrForbidden($user->hospital_id);
+    }
+
+    /**
+     * @return array{type: string, hospital_id: int}|JsonResponse
+     */
+    private function hospitalScopeOrForbidden($hospitalId): array|JsonResponse
+    {
+        if (!$hospitalId) {
+            return response()->json(['message' => 'A hospital assignment is required'], 403);
+        }
+
+        return ['type' => 'hospital', 'hospital_id' => (int) $hospitalId];
+    }
+
+    /**
+     * Apply authorization constraints before any filters, search, or pagination.
+     *
+     * @param array{type: string, hospital_id?: int|null, doctor_id?: int, patient_id?: int} $scope
+     */
+    private function applyClinicReadScope(Builder $query, array $scope): Builder
+    {
+        return match ($scope['type']) {
+            'hospital' => $query->where('hospital_id', $scope['hospital_id']),
+            'doctor' => $query->where('doctor_id', $scope['doctor_id']),
+            'patient' => $query->whereHas('patients', function (Builder $patientQuery) use ($scope) {
+                $patientQuery->where('patients.id', $scope['patient_id']);
+            }),
+            default => $query,
+        };
+    }
+
+    /**
+     * A hospital filter may narrow a scope but must never broaden it.
+     *
+     * @param array{type: string, hospital_id?: int|null} $scope
+     */
+    private function canUseHospitalFilter(array $scope, int $hospitalId): bool
+    {
+        if ($scope['type'] === 'global' || $scope['type'] === 'patient') {
+            return true;
+        }
+
+        if ($scope['type'] === 'hospital') {
+            return $scope['hospital_id'] === $hospitalId;
+        }
+
+        if ($scope['type'] === 'doctor') {
+            return isset($scope['hospital_id']) && $scope['hospital_id'] === $hospitalId;
+        }
+
+        return false;
     }
 }
