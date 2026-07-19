@@ -1,7 +1,11 @@
 /* eslint-disable react-hooks/exhaustive-deps */
-import type { User } from "@/services/users";
+import type {
+  CreateUserInput,
+  UpdateUserInput,
+  User,
+} from "@/services/users";
 import type { FC } from "react";
-import type { z } from "zod";
+import type { Resolver } from "react-hook-form";
 
 import { UserTable } from "@/components/custom/users/table";
 import { userColumns } from "@/components/custom/users/table-columns";
@@ -38,7 +42,12 @@ import {
   useUsers,
 } from "@/hooks/use-users";
 import { PermissionWrapper } from "@/providers/permission-wrapper";
-import { userSchema } from "@/validations/users";
+import {
+  createUserSchema,
+  hospitalScopedRoles,
+  peopleRoles,
+  updateUserSchema,
+} from "@/validations/users";
 import { zodResolver } from "@hookform/resolvers/zod";
 import React, { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -46,16 +55,30 @@ import { BiError } from "react-icons/bi";
 import { PiSpinnerGapBold } from "react-icons/pi";
 import { toast } from "sonner";
 
-const userDefaultValues: User = {
+type UserFormState = {
+  id?: number;
+  name: string;
+  email: string;
+  role: (typeof peopleRoles)[number] | "";
+  hospital_id?: number | null;
+  status: "working" | "retired" | "banned";
+  password?: string;
+  password_confirmation?: string;
+};
+
+const userDefaultValues: UserFormState = {
   name: "",
   email: "",
   password: "",
   role: "",
+  hospital_id: null,
+  status: "working",
   password_confirmation: "",
 };
 
 export const Users: FC = React.memo(() => {
   const [showNewUserDialog, setShowNewUserDialog] = useState(false);
+  const [showEditUserDialog, setShowEditUserDialog] = useState(false);
   const [showStatusChange, setShowStatusChange] = useState(false);
   const [showHospitalChange, setShowHospitalChange] = useState(false);
   const [showDetails, setShowDetails] = useState<boolean>(false);
@@ -78,6 +101,7 @@ export const Users: FC = React.memo(() => {
     setShowStatusChange(false);
     setShowHospitalChange(false);
     setShowNewUserDialog(false);
+    setShowEditUserDialog(false);
   };
 
   // reset current page when search is change
@@ -96,6 +120,11 @@ export const Users: FC = React.memo(() => {
       {/* user dialog */}
       <UserDialog
         open={showNewUserDialog}
+        onClose={closeDialog}
+      />
+
+      <UserDialog
+        open={showEditUserDialog}
         onClose={closeDialog}
         data={selectedUser}
       />
@@ -125,6 +154,7 @@ export const Users: FC = React.memo(() => {
           setSelectedUser={setSelectedUser}
           setShowStatusChange={setShowStatusChange}
           setShowHospitalChange={setShowHospitalChange}
+          setShowEditUser={setShowEditUserDialog}
           setShowDetails={setShowDetails}
           setPagination={setPagination}
           pagination={{
@@ -174,17 +204,36 @@ const UserDialog: FC<{
     currentPage: 1,
     pageSize: 10,
   });
+  const [hospitalSearch, setHospitalSearch] = useState("");
 
-  const form = useForm<z.infer<typeof userSchema>>({
-    resolver: zodResolver(userSchema),
+  const form = useForm<UserFormState>({
+    resolver: zodResolver(
+      (data ? updateUserSchema : createUserSchema) as never,
+    ) as Resolver<UserFormState>,
     defaultValues: userDefaultValues,
+  });
+  const selectedRole = form.watch("role");
+  const requiresHospital = hospitalScopedRoles.includes(
+    selectedRole as (typeof hospitalScopedRoles)[number],
+  );
+  const { data: hospitals, isLoading: hospitalsLoading } = useHospitals({
+    currentPage: 1,
+    pageSize: 20,
+    search: hospitalSearch,
   });
 
   // form submit handler
-  const onSubmit = async (values: z.infer<typeof userSchema>) => {
+  const onSubmit = async (values: UserFormState) => {
     setErrors({});
     if (data) {
-      const updatedValues = { ...values, id: data.id };
+      const updatedValues: UpdateUserInput = {
+        id: data.id!,
+        name: values.name,
+        email: values.email,
+        role: values.role as UpdateUserInput["role"],
+        hospital_id: requiresHospital ? values.hospital_id : null,
+        status: values.status,
+      };
       await updateUser(updatedValues)
         .then(() => {
           toast.success("User updated", {
@@ -201,7 +250,16 @@ const UserDialog: FC<{
           );
         });
     } else {
-      await createUser(values)
+      const createValues: CreateUserInput = {
+        name: values.name,
+        email: values.email,
+        role: values.role as CreateUserInput["role"],
+        hospital_id: requiresHospital ? values.hospital_id : null,
+        status: values.status,
+        password: values.password || "",
+        password_confirmation: values.password_confirmation || "",
+      };
+      await createUser(createValues)
         .then(() => {
           toast.success("User created", {
             description: new Date().toLocaleString(),
@@ -222,11 +280,24 @@ const UserDialog: FC<{
   // set form values if data is available
   useEffect(() => {
     if (data) {
-      form.reset(data);
+      form.reset({
+        id: data.id,
+        name: data.name,
+        email: data.email,
+        role: data.role as UserFormState["role"],
+        hospital_id: data.hospital_id ?? null,
+        status: data.status ?? "working",
+      });
     } else {
       form.reset(userDefaultValues);
     }
   }, [data]);
+
+  useEffect(() => {
+    if (!requiresHospital) {
+      form.setValue("hospital_id", null, { shouldValidate: true });
+    }
+  }, [form, requiresHospital]);
 
   return (
     <Dialog
@@ -311,7 +382,13 @@ const UserDialog: FC<{
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {roles?.roles?.map((role) => (
+                        {roles?.roles
+                          ?.filter((role) =>
+                            peopleRoles.includes(
+                              role.name as (typeof peopleRoles)[number],
+                            ),
+                          )
+                          .map((role) => (
                           <SelectItem
                             key={role.id}
                             value={role.name}
@@ -319,7 +396,7 @@ const UserDialog: FC<{
                           >
                             {role.name.replace(/_/g, " ")}
                           </SelectItem>
-                        ))}
+                          ))}
                       </SelectContent>
                     </Select>
                     <FormMessage />
@@ -327,8 +404,70 @@ const UserDialog: FC<{
                 )}
               />
 
-              {/* password */}
+              {requiresHospital && (
+                <FormField
+                  control={form.control}
+                  name="hospital_id"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        Hospital <span className="text-red-500">*</span>
+                      </FormLabel>
+                      <FormControl>
+                        <Combobox
+                          isLoading={hospitalsLoading}
+                          items={
+                            hospitals?.hospitals?.map((hospital) => ({
+                              label: hospital.name,
+                              value: hospital.id?.toString() || "",
+                            })) || []
+                          }
+                          onChange={setHospitalSearch}
+                          placeholder="Hospital"
+                          search={hospitalSearch}
+                          setValue={(value) =>
+                            field.onChange(value ? Number(value) : null)
+                          }
+                          value={field.value?.toString() || ""}
+                        />
+                      </FormControl>
+                      <FormMessage>
+                        {errors["hospital_id"] && errors["hospital_id"][0]}
+                      </FormMessage>
+                    </FormItem>
+                  )}
+                />
+              )}
+
               <FormField
+                control={form.control}
+                name="status"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>
+                      {data ? "Status" : "Initial Status"}{" "}
+                      <span className="text-red-500">*</span>
+                    </FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select user status" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="working">Working</SelectItem>
+                        <SelectItem value="retired">Retired</SelectItem>
+                        <SelectItem value="banned">Banned</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage>
+                      {errors["status"] && errors["status"][0]}
+                    </FormMessage>
+                  </FormItem>
+                )}
+              />
+
+              {!data && <FormField
                 control={form.control}
                 name="password"
                 render={({ field }) => (
@@ -348,10 +487,10 @@ const UserDialog: FC<{
                     </FormMessage>
                   </FormItem>
                 )}
-              />
+              />}
 
               {/* password confirmation */}
-              <FormField
+              {!data && <FormField
                 control={form.control}
                 name="password_confirmation"
                 render={({ field }) => (
@@ -372,7 +511,7 @@ const UserDialog: FC<{
                     </FormMessage>
                   </FormItem>
                 )}
-              />
+              />}
 
               {/*common error message */}
               {errors?.message && (
@@ -392,7 +531,7 @@ const UserDialog: FC<{
                   {(createPending || updatePending) && (
                     <PiSpinnerGapBold className="animate-spin" />
                   )}
-                  Save User
+                  {data ? "Update User" : "Create User"}
                 </Button>
               </div>
             </form>
@@ -621,7 +760,13 @@ const ShowDetails: FC<{
           </div>
           <div>
             <span className="font-medium">Hospital:</span>{" "}
-            {showDetails?.hospital ?? "N/A"}
+            {showDetails?.role === "super_admin"
+              ? "Not applicable"
+              : showDetails?.hospital || "Not assigned"}
+          </div>
+          <div className="capitalize">
+            <span className="font-medium">Status:</span>{" "}
+            {showDetails?.role === "patient" ? "N/A" : showDetails?.status}
           </div>
         </div>
       </DialogContent>

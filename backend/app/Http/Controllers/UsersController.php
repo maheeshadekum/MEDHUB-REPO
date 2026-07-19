@@ -9,10 +9,24 @@ use App\Models\User;
 use App\Models\Role;
 use Exception;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\ValidationException;
+use Illuminate\Validation\Rule;
 
 class UsersController extends Controller
 {
+    private const STAFF_ROLES = [
+        'hospital_admin',
+        'doctor',
+        'pharmacist',
+        'receptionist',
+    ];
+
+    private const PEOPLE_ROLES = [
+        'super_admin',
+        ...self::STAFF_ROLES,
+    ];
+
+    private const USER_STATUSES = ['working', 'retired', 'banned'];
+
     public function users(Request $request)
     {
         // get search, page size and page number from request
@@ -86,8 +100,8 @@ class UsersController extends Controller
             $role = $user->role;
             $hospital = $user->hospitals;
             unset($user->role);
-            unset($user->hospital);
             $user->role = $role ? $role->name : null;
+            $user->hospital_id = $hospital?->id;
             $user->hospital = $hospital ? $hospital->name : null;
             return $user;
         });
@@ -97,12 +111,14 @@ class UsersController extends Controller
     // Show user by ID
     public function getUser(User $user)
     {
-        $user->load('role:id,name');
+        $user->load(['role:id,name', 'hospitals:id,name']);
 
-        // remove role object from each user and add role name
         $role = $user->role;
+        $hospital = $user->hospitals;
         unset($user->role);
         $user->role = $role ? $role->name : null;
+        $user->hospital_id = $hospital?->id;
+        $user->hospital = $hospital?->name;
 
         return response()->json($user);
     }
@@ -110,53 +126,49 @@ class UsersController extends Controller
     // create user
     public function createUser(Request $request)
     {
+        if (!$request->user()?->hasRole('super_admin')) {
+            return response()->json(['message' => 'Only a super admin can create staff accounts'], 403);
+        }
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
+            'password' => ['required', 'string', 'min:8', 'confirmed'],
+            'role' => ['required', 'string', Rule::in(self::PEOPLE_ROLES)],
+            'hospital_id' => [
+                Rule::requiredIf(fn() => in_array($request->input('role'), self::STAFF_ROLES, true)),
+                Rule::prohibitedIf(fn() => $request->input('role') === 'super_admin'),
+                'nullable',
+                'integer',
+                'min:1',
+                'exists:hospitals,id',
+            ],
+            'status' => ['sometimes', Rule::in(self::USER_STATUSES)],
+        ]);
+
         try {
-            // start transaction
-            DB::beginTransaction();
+            $user = DB::transaction(function () use ($validated) {
+                $role = Role::where('name', $validated['role'])->firstOrFail();
 
-            // get available roles name from roles table
-            $roles = Role::all();
-
-            // create role names array without 'patient'
-            $roleNames = $roles->pluck('name')->reject(fn($name) => $name === 'patient');
-
-            $request->validate([
-                'name' => 'required|string|max:255',
-                'email' => 'required|string|email|max:255',
-                'password' => 'required|string|min:8|confirmed',
-                'role' => 'required|string|in:' . $roleNames->implode(','),
-            ]);
-
-            // check email already exists
-            if (User::where('email', $request->email)->exists()) {
-                return response()->json(['message' => 'Email already exists'], 400);
-            }
-
-            $user = new User([
-                'name' => $request->name,
-                'email' => $request->email,
-                'password' => bcrypt($request->password),
-                'role_id' => Role::where('name', $request->role)->first()->id,
-            ]);
-
-            $user->save();
-
-            // commit transaction
-            DB::commit();
+                return User::create([
+                    'name' => $validated['name'],
+                    'email' => $validated['email'],
+                    'password' => $validated['password'],
+                    'role_id' => $role->id,
+                    'hospital_id' => $validated['role'] === 'super_admin'
+                        ? null
+                        : $validated['hospital_id'],
+                    'status' => $validated['status'] ?? 'working',
+                ]);
+            });
 
             // Send account created email
-            Mail::to($user->email)->send(new AccountCreatedMail($user->email, $request->password, env('FRONTEND_URL') . '/login'));
+            Mail::to($user->email)->send(new AccountCreatedMail($user->email, $validated['password'], env('FRONTEND_URL') . '/login'));
 
-            return response()->json(['message' => 'User registered successfully'], 201);
-        } catch (ValidationException $e) {
-            DB::rollBack();
-            return response()->json([
-                'message' => $e->validator->errors()->first()
-            ], 400);
+            $user = $this->presentUser($user);
+
+            return response()->json(['message' => 'User registered successfully', 'user' => $user], 201);
         } catch (Exception $e) {
-            // rollback transaction
-            DB::rollBack();
-
             return response()->json([
                 'message' => 'Error creating user',
             ], 500);
@@ -166,108 +178,192 @@ class UsersController extends Controller
     // update user by ID
     public function updateUser(Request $request, User $user)
     {
+        $user->loadMissing('role');
+        if ($user->hasRole('patient')) {
+            return response()->json(['message' => 'Patient accounts must be managed through the Patient workflow'], 403);
+        }
+
+        if (!$this->canManageUser($request->user(), $user)) {
+            return response()->json(['message' => 'You are not authorized to edit this user'], 403);
+        }
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'string', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
+            'role' => ['required', 'string', Rule::in(self::PEOPLE_ROLES)],
+            'hospital_id' => [
+                Rule::requiredIf(fn() => in_array($request->input('role'), self::STAFF_ROLES, true)),
+                Rule::prohibitedIf(fn() => $request->input('role') === 'super_admin'),
+                'nullable',
+                'integer',
+                'min:1',
+                'exists:hospitals,id',
+            ],
+            'status' => ['required', Rule::in(self::USER_STATUSES)],
+        ]);
+
+        if ($request->user()->hasRole('hospital_admin') && (
+            !in_array($validated['role'], self::STAFF_ROLES, true)
+            || $validated['hospital_id'] !== $request->user()->hospital_id
+        )) {
+            return response()->json(['message' => 'Hospital admins can edit only staff in their assigned hospital'], 403);
+        }
+
+        if ($request->user()->is($user) && (
+            $validated['role'] !== 'super_admin'
+            || $validated['status'] !== 'working'
+        )) {
+            return response()->json(['message' => 'You cannot demote, ban, or retire your own account'], 403);
+        }
+
+        if ($this->wouldRemoveLastWorkingSuperAdmin($user, $validated['role'], $validated['status'])) {
+            return response()->json(['message' => 'The system must retain at least one working super admin'], 403);
+        }
+
         try {
-            // start transaction
-            DB::beginTransaction();
+            DB::transaction(function () use ($validated, $user) {
+                $role = Role::where('name', $validated['role'])->firstOrFail();
+                $user->update([
+                    'name' => $validated['name'],
+                    'email' => $validated['email'],
+                    'role_id' => $role->id,
+                    'hospital_id' => $validated['role'] === 'super_admin'
+                        ? null
+                        : $validated['hospital_id'],
+                    'status' => $validated['status'],
+                ]);
+            });
 
-            // validate request data
-            $request->validate([
-                'name' => 'required|string|max:255',
-                'email' => 'required|string|email|max:255|unique:users,email,' . $user->id,
-                'role' => 'required|exists:roles,name',
+            return response()->json([
+                'message' => 'User updated successfully',
+                'user' => $this->presentUser($user->fresh()),
             ]);
-
-            // update user data
-            $user->name = $request->name;
-            $user->email = $request->email;
-            $user->role_id = Role::where('name', $request->role)->first()->id;
-            $user->save();
-
-            // commit transaction
-            DB::commit();
-
-            return response()->json(['message' => 'User updated successfully', 'user' => $user], 200);
-        } catch (ValidationException $e) {
-            DB::rollBack();
-            return response()->json(['error' => $e->validator->errors()->first()], 400);
         } catch (Exception $e) {
-            // rollback transaction on error
-            DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['message' => 'Error updating user'], 500);
         }
     }
 
     // update user status
     public function updateStatus(Request $request, User $user)
     {
+        $validated = $request->validate([
+            'status' => ['required', Rule::in(self::USER_STATUSES)],
+        ]);
+
+        $user->loadMissing('role');
+        if (!$this->canManageUser($request->user(), $user)) {
+            return response()->json(['message' => 'You are not authorized to change this user status'], 403);
+        }
+
+        if ($request->user()->is($user) && $validated['status'] !== 'working') {
+            return response()->json(['message' => 'You cannot ban or retire your own account'], 403);
+        }
+
+        if ($this->wouldRemoveLastWorkingSuperAdmin($user, $user->role->name, $validated['status'])) {
+            return response()->json(['message' => 'The system must retain at least one working super admin'], 403);
+        }
+
         try {
-            // start transaction
-            DB::beginTransaction();
+            $user->update(['status' => $validated['status']]);
 
-            // validate request data
-            $request->validate([
-                'status' => 'required|in:working,retired,banned',
+            return response()->json([
+                'message' => 'User status updated successfully',
+                'user' => $this->presentUser($user->fresh()),
             ]);
-
-            $user->status = $request->status;
-            $user->save();
-
-            // commit transaction
-            DB::commit();
-
-            return response()->json(['message' => 'User status updated successfully', 'user' => $user], 200);
         } catch (Exception $e) {
-            // rollback transaction on error
-            DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['message' => 'Error updating user status'], 500);
         }
     }
 
     // assign hospital to user
     public function assignHospital(Request $request, User $user)
     {
-        try {
-            // start transaction
-            DB::beginTransaction();
-
-            // validate request data
-            $request->validate([
-                'hospital_id' => 'required|exists:hospitals,id',
-            ]);
-
-            $user->hospital_id = $request->hospital_id;
-            $user->save();
-
-            // commit transaction
-            DB::commit();
-
-            return response()->json(['message' => 'Hospital assigned to user successfully', 'user' => $user], 200);
-        } catch (Exception $e) {
-            // rollback transaction on error
-            DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+        if (!$request->user()?->hasRole('super_admin')) {
+            return response()->json(['message' => 'Only a super admin can change a user hospital'], 403);
         }
+
+        $user->loadMissing('role');
+        if (!in_array($user->role?->name, self::STAFF_ROLES, true)) {
+            return response()->json(['message' => 'Only hospital-scoped staff can be assigned to a hospital'], 403);
+        }
+
+        $validated = $request->validate([
+            'hospital_id' => ['required', 'integer', 'min:1', 'exists:hospitals,id'],
+        ]);
+
+        try {
+            $user->update(['hospital_id' => $validated['hospital_id']]);
+
+            return response()->json([
+                'message' => 'Hospital assigned to user successfully',
+                'user' => $this->presentUser($user->fresh()),
+            ]);
+        } catch (Exception $e) {
+            return response()->json(['message' => 'Error assigning hospital'], 500);
+        }
+    }
+
+    private function wouldRemoveLastWorkingSuperAdmin(User $user, string $newRole, string $newStatus): bool
+    {
+        if (!$user->hasRole('super_admin') || $user->status !== 'working') {
+            return false;
+        }
+
+        if ($newRole === 'super_admin' && $newStatus === 'working') {
+            return false;
+        }
+
+        return User::where('status', 'working')
+            ->whereHas('role', fn($query) => $query->where('name', 'super_admin'))
+            ->count() <= 1;
+    }
+
+    private function canManageUser(?User $actor, User $target): bool
+    {
+        if (!$actor) {
+            return false;
+        }
+
+        if ($actor->hasRole('super_admin')) {
+            return true;
+        }
+
+        return $actor->hasRole('hospital_admin')
+            && $actor->hospital_id
+            && $target->hospital_id === $actor->hospital_id
+            && in_array($target->role?->name, self::STAFF_ROLES, true);
+    }
+
+    private function presentUser(User $user): User
+    {
+        $user->load(['role:id,name', 'hospitals:id,name']);
+        $role = $user->role;
+        $hospital = $user->hospitals;
+        unset($user->role);
+        $user->role = $role?->name;
+        $user->hospital_id = $hospital?->id;
+        $user->hospital = $hospital?->name;
+
+        return $user;
     }
 
     // delete user by ID
     public function deleteUser(Request $request, User $user)
     {
+        if (!$request->user()?->hasRole('super_admin')) {
+            return response()->json(['message' => 'Only a super admin can delete users'], 403);
+        }
+
         if ($request->user()->id === $user->id) {
             return response()->json([
                 'message' => 'You cannot delete your own account',
-            ], 400);
+            ], 403);
         }
 
         if ($user->role && $user->role->name === 'super_admin') {
-            $superAdminCount = User::whereHas('role', function ($query) {
-                $query->where('name', 'super_admin');
-            })->count();
-
-            if ($superAdminCount <= 1) {
-                return response()->json([
-                    'message' => 'Cannot delete the last super admin',
-                ], 400);
-            }
+            return response()->json([
+                'message' => 'Super admin accounts cannot be deleted',
+            ], 403);
         }
 
         try {

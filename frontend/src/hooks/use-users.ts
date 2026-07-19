@@ -1,5 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import type { User } from "@/services/users";
+import type {
+  CreateUserInput,
+  UpdateUserInput,
+} from "@/services/users";
 
 import { usersServices } from "@/services/users";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -51,7 +54,7 @@ export const useUserById = (id: number) =>
 export const useCreateUser = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: User) => usersServices.createUser(data),
+    mutationFn: async (data: CreateUserInput) => usersServices.createUser(data),
     onSettled: () => {
       queryClient.refetchQueries({ queryKey: ["users"] });
     },
@@ -65,7 +68,7 @@ export const useCreateUser = () => {
 export const useUpdateUser = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: User) => usersServices.updateUser(data),
+    mutationFn: async (data: UpdateUserInput) => usersServices.updateUser(data),
     onSettled: () => {
       queryClient.refetchQueries({ queryKey: ["users"] });
     },

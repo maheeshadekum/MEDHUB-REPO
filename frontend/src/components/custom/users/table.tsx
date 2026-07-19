@@ -39,6 +39,7 @@ interface UserTableProps<TData, TValue> {
   setSearch: (search: string) => void;
   setShowStatusChange: (open: boolean) => void;
   setShowHospitalChange: (open: boolean) => void;
+  setShowEditUser: (open: boolean) => void;
   setShowDetails: (show: boolean) => void;
   setSelectedUser: (user: User) => void;
   setPagination: ({
@@ -67,6 +68,7 @@ export function UserTable<TData, TValue>({
   setSearch,
   setShowStatusChange,
   setShowHospitalChange,
+  setShowEditUser,
   setSelectedUser,
   setShowDetails,
   setPagination,
@@ -93,6 +95,7 @@ export function UserTable<TData, TValue>({
     },
     meta: {
       setShowHospitalChange,
+      setShowEditUser,
       setShowStatusChange,
       setSelectedUser,
       setShowDetails,

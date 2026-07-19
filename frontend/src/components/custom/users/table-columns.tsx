@@ -35,6 +35,22 @@ export const userColumns: ColumnDef<User>[] = [
     ),
   },
   {
+    accessorKey: "hospital",
+    header: "Hospital",
+    cell: ({ row }) => {
+      const role = row.original.role;
+      if (role === "super_admin" || role === "patient") {
+        return <span className="text-gray-500">Not applicable</span>;
+      }
+
+      return row.original.hospital ? (
+        <span>{row.original.hospital}</span>
+      ) : (
+        <span className="font-medium text-red-600">Not assigned</span>
+      );
+    },
+  },
+  {
     accessorKey: "status",
     header: "Status",
     cell: ({ row }) => (
@@ -51,6 +67,7 @@ export const userColumns: ColumnDef<User>[] = [
       const meta = table.options.meta as {
         setShowStatusChange: (open: boolean) => void;
         setShowHospitalChange: (open: boolean) => void;
+        setShowEditUser: (open: boolean) => void;
         setSelectedUser: (user: User) => void;
         setShowDetails: (show: boolean) => void;
         user: User;
@@ -58,12 +75,19 @@ export const userColumns: ColumnDef<User>[] = [
       const {
         setShowStatusChange,
         setShowHospitalChange,
+        setShowEditUser,
         setSelectedUser,
         setShowDetails,
         user,
       } = meta;
       const role = row.getValue("role") as string;
       const isPatient = role === "patient";
+      const isHospitalScoped = [
+        "hospital_admin",
+        "doctor",
+        "pharmacist",
+        "receptionist",
+      ].includes(role);
       const isSameAsLoggedInUser = row.original.id === user?.id;
 
       return (
@@ -77,19 +101,29 @@ export const userColumns: ColumnDef<User>[] = [
           <DropdownMenuContent align="end">
             <DropdownMenuLabel>Actions</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            {!isSameAsLoggedInUser && (
+            <PermissionWrapper permissions={[permissions.viewUsers]}>
+              <DropdownMenuItem
+                onClick={() => {
+                  setShowDetails(true);
+                  setSelectedUser(row.original);
+                }}
+              >
+                View Details
+              </DropdownMenuItem>
+            </PermissionWrapper>
+            {!isPatient && user.role === "super_admin" && (
               <PermissionWrapper permissions={[permissions.updateUsers]}>
                 <DropdownMenuItem
                   onClick={() => {
                     setSelectedUser(row.original);
-                    setShowStatusChange(true);
+                    setShowEditUser(true);
                   }}
                 >
-                  Change Status
+                  Edit User
                 </DropdownMenuItem>
               </PermissionWrapper>
             )}
-            {!isSameAsLoggedInUser && !isPatient && (
+            {!isSameAsLoggedInUser && isHospitalScoped && (
               <PermissionWrapper
                 permissions={[permissions.updateUsersHospital]}
               >
@@ -103,16 +137,18 @@ export const userColumns: ColumnDef<User>[] = [
                 </DropdownMenuItem>
               </PermissionWrapper>
             )}
-            <PermissionWrapper permissions={[permissions.viewUsers]}>
-              <DropdownMenuItem
-                onClick={() => {
-                  setShowDetails(true);
-                  setSelectedUser(row.original);
-                }}
-              >
-                More Details
-              </DropdownMenuItem>
-            </PermissionWrapper>
+            {!isSameAsLoggedInUser && (
+              <PermissionWrapper permissions={[permissions.updateUsers]}>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSelectedUser(row.original);
+                    setShowStatusChange(true);
+                  }}
+                >
+                  Change Status
+                </DropdownMenuItem>
+              </PermissionWrapper>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       );

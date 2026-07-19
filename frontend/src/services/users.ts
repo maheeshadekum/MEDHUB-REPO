@@ -1,10 +1,18 @@
-import type { userSchema } from "@/validations/users";
+import type { createUserSchema, updateUserSchema } from "@/validations/users";
 import type { z } from "zod";
 
 import { api } from "@/services/api";
 
-type UserWithoutId = z.infer<typeof userSchema>;
-export type User = UserWithoutId & {
+export type CreateUserInput = z.infer<typeof createUserSchema>;
+export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+
+export type User = {
+  name: string;
+  email: string;
+  role: string;
+  status?: "working" | "retired" | "banned";
+  hospital_id?: number;
+  hospital?: string | null;
   id?: number;
   permissions?: string[];
   patient_id?: number;
@@ -39,13 +47,13 @@ export const usersServices = {
   },
 
   // Create a new user
-  createUser: async (user: User) => {
+  createUser: async (user: CreateUserInput) => {
     const { data } = await api.post("/users", user);
     return data;
   },
 
   // Update an existing user
-  updateUser: async (user: User) => {
+  updateUser: async (user: UpdateUserInput) => {
     const { data } = await api.put(`/users/${user.id}`, user);
     return data;
   },
