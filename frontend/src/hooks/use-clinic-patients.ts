@@ -1,5 +1,10 @@
 import { clinicPatientsServices } from "@/services/clinic-patients";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 // Get clinic patients with pagination and filters
 export const useClinicPatients = (data: {
@@ -10,21 +15,8 @@ export const useClinicPatients = (data: {
 }) =>
   useQuery({
     queryKey: ["clinic-patients", data],
-    queryFn: async () => {
-      try {
-        const clinicPatients =
-          await clinicPatientsServices.getClinicPatients(data);
-        return clinicPatients;
-      } catch {
-        return {
-          clinicPatients: [],
-          total: 0,
-          from: 0,
-          to: 0,
-          endPage: 0,
-        };
-      }
-    },
+    queryFn: () => clinicPatientsServices.getClinicPatients(data),
+    placeholderData: keepPreviousData,
     retry: false,
     refetchOnWindowFocus: false,
   });
@@ -53,8 +45,8 @@ export const useCreateClinicPatient = () => {
 
   return useMutation({
     mutationFn: clinicPatientsServices.createClinicPatient,
-    onSettled: () => {
-      queryClient.refetchQueries({ queryKey: ["clinic-patients"] });
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["clinic-patients"] });
     },
     onError: (error) => {
       return error;
@@ -68,9 +60,9 @@ export const useUpdateClinicPatient = () => {
 
   return useMutation({
     mutationFn: clinicPatientsServices.updateClinicPatient,
-    onSettled: () => {
-      queryClient.refetchQueries({ queryKey: ["clinic-patients"] });
-      queryClient.refetchQueries({ queryKey: ["clinic-patient"] });
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["clinic-patients"] });
+      queryClient.invalidateQueries({ queryKey: ["clinic-patient"] });
     },
     onError: (error) => {
       return error;
@@ -84,8 +76,8 @@ export const useDeleteClinicPatient = () => {
 
   return useMutation({
     mutationFn: clinicPatientsServices.deleteClinicPatient,
-    onSettled: () => {
-      queryClient.refetchQueries({ queryKey: ["clinic-patients"] });
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["clinic-patients"] });
     },
     onError: (error) => {
       return error;

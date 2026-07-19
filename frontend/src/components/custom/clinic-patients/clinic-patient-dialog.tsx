@@ -19,14 +19,20 @@ import {
   FormMessage,
 } from "@/components/ui";
 import {
+  useClinicPatientClinicOptions,
+  useClinicPatientHospitalOption,
+  useClinicPatientHospitalOptions,
+  useClinicPatientPatientOptions,
+  useDebouncedValue,
+} from "@/hooks/use-clinic-patient-options";
+import {
   useCreateClinicPatient,
   useUpdateClinicPatient,
 } from "@/hooks/use-clinic-patients";
-import { useClinics } from "@/hooks/use-clinics";
-import { usePatients } from "@/hooks/use-patients";
+import { useAuth } from "@/hooks/use-auth";
 import { clinicPatientSchema } from "@/validations/clinic-patients";
 import { zodResolver } from "@hookform/resolvers/zod";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 
@@ -36,35 +42,67 @@ interface ClinicPatientDialogProps {
   clinicPatient?: ClinicPatient;
 }
 
+type ApiErrorData = {
+  errors?: Record<string, string[]>;
+  message?: string;
+};
+
+const getApiErrorData = (error: unknown): ApiErrorData | null => {
+  if (!error || typeof error !== "object" || !("response" in error)) {
+    return null;
+  }
+
+  return (
+    error as {
+      response?: { data?: ApiErrorData };
+    }
+  ).response?.data ?? null;
+};
+
 export const ClinicPatientDialog: FC<ClinicPatientDialogProps> = React.memo(
   ({ open, onOpenChange, clinicPatient }) => {
+    const { user } = useAuth();
     const isEdit = Boolean(clinicPatient);
+    const isSuperAdmin = user?.role === "super_admin";
+    const fixedHospitalId = isSuperAdmin ? 0 : (user?.hospital_id ?? 0);
+    const [selectedHospitalId, setSelectedHospitalId] = useState(0);
+    const [hospitalSearch, setHospitalSearch] = useState("");
     const [clinicSearch, setClinicSearch] = useState("");
     const [patientSearch, setPatientSearch] = useState("");
-    const [errors, setErrors] = useState<{ [key: string]: string[] | string }>(
-      {},
+    const [hospitalError, setHospitalError] = useState("");
+    const [fieldErrors, setFieldErrors] = useState<
+      Record<string, string[] | string>
+    >({});
+    const [generalError, setGeneralError] = useState("");
+
+    const debouncedHospitalSearch = useDebouncedValue(hospitalSearch);
+    const debouncedPatientSearch = useDebouncedValue(patientSearch);
+    const activeHospitalId = isSuperAdmin
+      ? selectedHospitalId
+      : fixedHospitalId;
+
+    const hospitalsQuery = useClinicPatientHospitalOptions(
+      debouncedHospitalSearch,
+      open && isSuperAdmin,
+    );
+    const hospitalContextQuery = useClinicPatientHospitalOption(
+      activeHospitalId,
+      open && activeHospitalId > 0,
+    );
+    const clinicsQuery = useClinicPatientClinicOptions(
+      activeHospitalId,
+      open && activeHospitalId > 0,
+    );
+    const patientsQuery = useClinicPatientPatientOptions(
+      debouncedPatientSearch,
+      open,
     );
 
-    // Fetch data
-    const { data: clinicsData, isLoading: isClinicsLoading } = useClinics({
-      pageSize: 20,
-      currentPage: 1,
-      search: clinicSearch,
-    });
-
-    const { data: patientsData, isLoading: isPatientsLoading } = usePatients({
-      pageSize: 20,
-      currentPage: 1,
-      search: patientSearch,
-    });
-
-    // Mutations
     const { mutateAsync: createClinicPatient, isPending: isCreating } =
       useCreateClinicPatient();
     const { mutateAsync: updateClinicPatient, isPending: isUpdating } =
       useUpdateClinicPatient();
 
-    // Form setup
     const form = useForm<ClinicPatientSchema>({
       resolver: zodResolver(clinicPatientSchema),
       defaultValues: {
@@ -73,111 +111,228 @@ export const ClinicPatientDialog: FC<ClinicPatientDialogProps> = React.memo(
       },
     });
 
-    // Effect to set form values when editing
     useEffect(() => {
-      if (isEdit && clinicPatient && open) {
-        form.reset({
-          clinic_id: clinicPatient.clinic_id,
-          patient_id: clinicPatient.patient_id,
-        });
-      } else if (!isEdit && open) {
-        form.reset({
-          clinic_id: 0,
-          patient_id: 0,
+      if (!open) return;
+
+      const initialHospitalId = isSuperAdmin
+        ? (clinicPatient?.clinic?.hospital_id ?? 0)
+        : fixedHospitalId;
+
+      setSelectedHospitalId(initialHospitalId);
+      setHospitalSearch("");
+      setClinicSearch("");
+      setPatientSearch("");
+      setHospitalError("");
+      setFieldErrors({});
+      setGeneralError("");
+      form.reset({
+        clinic_id: clinicPatient?.clinic_id ?? 0,
+        patient_id: clinicPatient?.patient_id ?? 0,
+      });
+    }, [clinicPatient, fixedHospitalId, form, isSuperAdmin, open]);
+
+    const hospitalOptions = useMemo(() => {
+      const hospitals = [...(hospitalsQuery.data ?? [])];
+      const currentHospital = hospitalContextQuery.data;
+
+      if (
+        currentHospital &&
+        !hospitals.some((hospital) => hospital.id === currentHospital.id)
+      ) {
+        hospitals.unshift(currentHospital);
+      }
+
+      return hospitals.map((hospital) => ({
+        label: [hospital.name, hospital.district, hospital.identifier]
+          .filter(Boolean)
+          .join(" — "),
+        value: hospital.id.toString(),
+      }));
+    }, [hospitalContextQuery.data, hospitalsQuery.data]);
+
+    const clinicOptions = useMemo(() => {
+      const normalizedSearch = clinicSearch.trim().toLowerCase();
+      const clinics = [...(clinicsQuery.data ?? [])];
+
+      if (
+        clinicPatient?.clinic &&
+        clinicPatient.clinic.hospital_id === activeHospitalId &&
+        !clinics.some((clinic) => clinic.id === clinicPatient.clinic?.id)
+      ) {
+        clinics.unshift({
+          id: clinicPatient.clinic.id,
+          name: clinicPatient.clinic.name,
+          hospital_id: clinicPatient.clinic.hospital_id,
+          location: clinicPatient.clinic.location,
         });
       }
-    }, [isEdit, clinicPatient, open, form]);
 
-    // Form submission
+      return clinics
+        .filter((clinic) => {
+          if (!normalizedSearch) return true;
+          return `${clinic.name} ${clinic.location ?? ""}`
+            .toLowerCase()
+            .includes(normalizedSearch);
+        })
+        .map((clinic) => ({
+          label: clinic.location
+            ? `${clinic.name} — ${clinic.location}`
+            : clinic.name,
+          value: clinic.id.toString(),
+        }));
+    }, [activeHospitalId, clinicPatient, clinicSearch, clinicsQuery.data]);
+
+    const patientOptions = useMemo(() => {
+      const patients = [...(patientsQuery.data ?? [])];
+
+      if (
+        clinicPatient?.patient &&
+        !patients.some((patient) => patient.id === clinicPatient.patient?.id)
+      ) {
+        patients.unshift(clinicPatient.patient);
+      }
+
+      return patients.map((patient) => ({
+        label: `${patient.name} (${patient.nic})`,
+        value: patient.id.toString(),
+      }));
+    }, [clinicPatient?.patient, patientsQuery.data]);
+
+    const isPending = isCreating || isUpdating;
+    const hasHospitalContext = activeHospitalId > 0;
+
+    const handleHospitalChange = (value: string) => {
+      const nextHospitalId = value ? Number(value) : 0;
+      setSelectedHospitalId(nextHospitalId);
+      setHospitalError("");
+      setClinicSearch("");
+      setFieldErrors((current) => ({ ...current, clinic_id: [] }));
+      form.setValue("clinic_id", 0, { shouldValidate: false });
+    };
+
+    const handleClose = () => {
+      if (isPending) return;
+      form.reset();
+      setFieldErrors({});
+      setGeneralError("");
+      setHospitalError("");
+      onOpenChange(false);
+    };
+
     const onSubmit = async (data: ClinicPatientSchema) => {
-      setErrors({});
+      setFieldErrors({});
+      setGeneralError("");
+
+      if (!hasHospitalContext) {
+        const message = isSuperAdmin
+          ? "Hospital is required"
+          : "A hospital assignment is required to manage clinic patients.";
+        setHospitalError(message);
+        return;
+      }
+
       const alert = toast.loading(
-        isEdit ? "Updating clinic patient..." : "Adding clinic patient...",
+        isEdit ? "Updating clinic assignment..." : "Adding patient to clinic...",
       );
 
       try {
         if (isEdit && clinicPatient?.id) {
-          await updateClinicPatient({
-            id: clinicPatient.id,
-            ...data,
-          });
-          toast.success("Clinic patient updated successfully", {
-            id: alert,
-          });
+          await updateClinicPatient({ id: clinicPatient.id, ...data });
+          toast.success("Clinic assignment updated successfully", { id: alert });
         } else {
           await createClinicPatient(data);
-          toast.success("Clinic patient added successfully", {
-            id: alert,
-          });
+          toast.success("Patient added to clinic successfully", { id: alert });
         }
+
         form.reset();
         onOpenChange(false);
       } catch (error: unknown) {
-        const errorData =
-          error && typeof error === "object" && "response" in error
-            ? (
-                error as {
-                  response: {
-                    data: {
-                      errors?: Record<string, string[]>;
-                      message?: string;
-                    };
-                  };
-                }
-              ).response?.data
-            : null;
+        const errorData = getApiErrorData(error);
+
         if (errorData?.errors) {
-          setErrors(errorData.errors);
-          toast.error("Validation failed", {
-            description: "Please check the form for errors",
-            id: alert,
-          });
+          setFieldErrors(errorData.errors);
+          setGeneralError("Please review the highlighted fields.");
+          toast.error("Unable to save clinic assignment", { id: alert });
         } else if (errorData?.message) {
-          toast.error(errorData.message, { id: alert });
+          const safeMessage =
+            errorData.message.toLowerCase().includes("authorized") ||
+            errorData.message.toLowerCase().includes("hospital")
+              ? errorData.message
+              : "Unable to save the clinic assignment. Please try again.";
+          setGeneralError(safeMessage);
+          toast.error(safeMessage, { id: alert });
         } else {
-          toast.error(
-            isEdit
-              ? "Failed to update clinic patient"
-              : "Failed to add clinic patient",
-            { id: alert },
-          );
+          const message = "Unable to save the clinic assignment. Please try again.";
+          setGeneralError(message);
+          toast.error(message, { id: alert });
         }
       }
     };
 
-    // Prepare clinic options
-    const clinicOptions =
-      clinicsData?.clinics?.map((clinic) => ({
-        label: `${clinic.name} - ${clinic.location}`,
-        value: clinic.id?.toString() || "",
-      })) || [];
-
-    // Prepare patient options
-    const patientOptions =
-      patientsData?.patients?.map((patient) => ({
-        label: `${patient.name} (${patient.nic})`,
-        value: patient.id?.toString() || "",
-      })) || [];
-
-    const isLoading = isCreating || isUpdating;
-
     return (
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-md">
+      <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && handleClose()}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {isEdit ? "Edit Clinic Patient" : "Add Clinic Patient"}
+              {isEdit ? "Edit Clinic Assignment" : "Add Patient to Clinic"}
             </DialogTitle>
             <DialogDescription>
               {isEdit
-                ? "Update the clinic patient assignment."
-                : "Assign a patient to a clinic."}
+                ? "Update the Clinic and Patient for this assignment."
+                : "Choose a Hospital, Clinic, and Patient to create an assignment."}
             </DialogDescription>
           </DialogHeader>
 
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-              {/* Clinic Selection */}
+              {isSuperAdmin ? (
+                <FormItem>
+                  <FormLabel>Hospital</FormLabel>
+                  <FormControl>
+                    <Combobox
+                      items={hospitalOptions}
+                      search={hospitalSearch}
+                      onChange={setHospitalSearch}
+                      isLoading={hospitalsQuery.isPending}
+                      placeholder="hospital"
+                      value={selectedHospitalId ? selectedHospitalId.toString() : ""}
+                      setValue={handleHospitalChange}
+                      disabled={isPending}
+                    />
+                  </FormControl>
+                  {hospitalError && (
+                    <p className="text-sm font-medium text-destructive">
+                      {hospitalError}
+                    </p>
+                  )}
+                  {hospitalsQuery.isError && (
+                    <p className="text-sm font-medium text-destructive">
+                      Unable to load Hospitals. Search again or try later.
+                    </p>
+                  )}
+                </FormItem>
+              ) : (
+                <div aria-labelledby="clinic-patient-hospital-label">
+                  <p
+                    id="clinic-patient-hospital-label"
+                    className="text-sm font-medium"
+                  >
+                    Hospital
+                  </p>
+                  <p className="mt-2 rounded-md border bg-muted px-3 py-2 text-sm">
+                    {hospitalContextQuery.data?.name ??
+                      (fixedHospitalId
+                        ? `Hospital #${fixedHospitalId}`
+                        : "No hospital assigned")}
+                  </p>
+                  {!hasHospitalContext && (
+                    <p className="mt-2 text-sm font-medium text-destructive">
+                      A hospital assignment is required to manage clinic patients.
+                    </p>
+                  )}
+                </div>
+              )}
+
               <FormField
                 control={form.control}
                 name="clinic_id"
@@ -189,27 +344,40 @@ export const ClinicPatientDialog: FC<ClinicPatientDialogProps> = React.memo(
                         items={clinicOptions}
                         search={clinicSearch}
                         onChange={setClinicSearch}
-                        isLoading={isClinicsLoading}
-                        placeholder="Select clinic..."
-                        value={field.value ? field.value.toString() || "" : ""}
+                        isLoading={clinicsQuery.isPending}
+                        placeholder={
+                          hasHospitalContext
+                            ? "clinic"
+                            : "a Hospital before selecting a Clinic"
+                        }
+                        value={field.value ? field.value.toString() : ""}
                         setValue={(value) => {
                           field.onChange(value ? Number(value) : 0);
+                          setFieldErrors((current) => ({
+                            ...current,
+                            clinic_id: [],
+                          }));
                         }}
+                        disabled={!hasHospitalContext || isPending}
                       />
                     </FormControl>
                     <FormMessage />
-                    {errors.clinic_id && (
-                      <p className="text-sm text-red-500">
-                        {Array.isArray(errors.clinic_id)
-                          ? errors.clinic_id[0]
-                          : errors.clinic_id}
+                    {fieldErrors.clinic_id && (
+                      <p className="text-sm font-medium text-destructive">
+                        {Array.isArray(fieldErrors.clinic_id)
+                          ? fieldErrors.clinic_id[0]
+                          : fieldErrors.clinic_id}
+                      </p>
+                    )}
+                    {clinicsQuery.isError && hasHospitalContext && (
+                      <p className="text-sm font-medium text-destructive">
+                        Unable to load Clinics for this Hospital.
                       </p>
                     )}
                   </FormItem>
                 )}
               />
 
-              {/* Patient Selection */}
               <FormField
                 control={form.control}
                 name="patient_id"
@@ -221,43 +389,62 @@ export const ClinicPatientDialog: FC<ClinicPatientDialogProps> = React.memo(
                         items={patientOptions}
                         search={patientSearch}
                         onChange={setPatientSearch}
-                        isLoading={isPatientsLoading}
-                        placeholder="Select patient..."
-                        value={field.value ? field.value.toString() || "" : ""}
+                        isLoading={patientsQuery.isPending}
+                        placeholder="patient by name or NIC"
+                        value={field.value ? field.value.toString() : ""}
                         setValue={(value) => {
                           field.onChange(value ? Number(value) : 0);
+                          setFieldErrors((current) => ({
+                            ...current,
+                            patient_id: [],
+                          }));
                         }}
+                        disabled={isPending}
                       />
                     </FormControl>
                     <FormMessage />
-                    {errors.patient_id && (
-                      <p className="text-sm text-red-500">
-                        {Array.isArray(errors.patient_id)
-                          ? errors.patient_id[0]
-                          : errors.patient_id}
+                    {fieldErrors.patient_id && (
+                      <p className="text-sm font-medium text-destructive">
+                        {Array.isArray(fieldErrors.patient_id)
+                          ? fieldErrors.patient_id[0]
+                          : fieldErrors.patient_id}
+                      </p>
+                    )}
+                    {patientsQuery.isError && (
+                      <p className="text-sm font-medium text-destructive">
+                        Unable to load Patients. Search again or try later.
                       </p>
                     )}
                   </FormItem>
                 )}
               />
 
+              {generalError && (
+                <p role="alert" className="text-sm font-medium text-destructive">
+                  {generalError}
+                </p>
+              )}
+
               <DialogFooter>
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => onOpenChange(false)}
-                  disabled={isLoading}
+                  onClick={handleClose}
+                  disabled={isPending}
                 >
                   Cancel
                 </Button>
-                <Button type="submit" disabled={isLoading}>
-                  {isLoading
+                <Button
+                  type="submit"
+                  disabled={isPending || !hasHospitalContext}
+                >
+                  {isPending
                     ? isEdit
-                      ? "Updating..."
-                      : "Adding..."
+                      ? "Updating Assignment..."
+                      : "Adding Patient..."
                     : isEdit
-                      ? "Update"
-                      : "Add"}
+                      ? "Update Assignment"
+                      : "Add Patient"}
                 </Button>
               </DialogFooter>
             </form>

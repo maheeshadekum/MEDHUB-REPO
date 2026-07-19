@@ -4,11 +4,32 @@ import type { z } from "zod";
 import { api } from "@/services/api";
 
 type ClinicPatientWithoutId = z.infer<typeof clinicPatientSchema>;
+export type ClinicPatientHospitalOption = {
+  id: number;
+  name: string;
+  identifier?: string;
+  district?: string;
+};
+
+export type ClinicPatientClinicOption = {
+  id: number;
+  name: string;
+  location?: string;
+  hospital_id: number;
+};
+
+export type ClinicPatientPatientOption = {
+  id: number;
+  name: string;
+  nic: string;
+};
+
 export type ClinicPatient = ClinicPatientWithoutId & {
   id?: number;
   clinic?: {
     id: number;
     name: string;
+    location?: string;
     hospital_id: number;
     hospital?: {
       id: number;
@@ -71,5 +92,39 @@ export const clinicPatientsServices = {
   // Delete a clinic patient
   deleteClinicPatient: async (id: number) => {
     await api.delete(`/clinic-patients/${id}`);
+  },
+
+  getHospitalOptions: async (search: string, signal?: AbortSignal) => {
+    const { data } = await api.get("/hospitals", {
+      params: { page: 1, size: 20, search: search || undefined },
+      signal,
+    });
+
+    return data.data as ClinicPatientHospitalOption[];
+  },
+
+  getHospitalOption: async (hospitalId: number, signal?: AbortSignal) => {
+    const { data } = await api.get(`/hospitals/single/${hospitalId}`, {
+      signal,
+    });
+
+    return data as ClinicPatientHospitalOption;
+  },
+
+  getClinicOptions: async (hospitalId: number, signal?: AbortSignal) => {
+    const { data } = await api.get(`/clinics/hospital/${hospitalId}`, {
+      signal,
+    });
+
+    return data as ClinicPatientClinicOption[];
+  },
+
+  getPatientOptions: async (search: string, signal?: AbortSignal) => {
+    const { data } = await api.get("/patients", {
+      params: { page: 1, size: 20, search: search || undefined },
+      signal,
+    });
+
+    return data.data as ClinicPatientPatientOption[];
   },
 };

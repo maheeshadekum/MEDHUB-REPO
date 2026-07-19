@@ -21,10 +21,7 @@ export const ClinicPatientsPage: FC = React.memo(() => {
   return (
     <PrivateRoute>
       <PermissionWrapper
-        permissions={[
-          permissions.viewClinicPatients,
-          permissions.manageClinicPatients,
-        ]}
+        permissions={[permissions.viewClinicPatients]}
         is404
       >
         <Suspense fallback={<Loader />}>

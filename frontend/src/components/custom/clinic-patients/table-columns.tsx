@@ -10,8 +10,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui";
-import { permissions } from "@/constants/permissions";
-import { PermissionWrapper } from "@/providers/permission-wrapper";
 import { MoreHorizontal } from "lucide-react";
 
 export const clinicPatientColumns: ColumnDef<ClinicPatient>[] = [
@@ -52,20 +50,26 @@ export const clinicPatientColumns: ColumnDef<ClinicPatient>[] = [
       const meta = table.options.meta as {
         setSelectedClinicPatient: (clinicPatient: ClinicPatient) => void;
         setOpen: (open: boolean) => void;
-        handleDelete: (id: number) => void;
+        handleDelete: (clinicPatient: ClinicPatient) => void;
         setShowMoreInfo: (show: boolean) => void;
+        canManageClinicPatients: boolean;
       };
       const {
         setSelectedClinicPatient,
         setOpen,
         handleDelete,
         setShowMoreInfo,
+        canManageClinicPatients,
       } = meta;
+      const patientName = row.original.patient?.name ?? "patient";
+      const clinicName = row.original.clinic?.name ?? "clinic";
       return (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-8 w-8 p-0">
-              <span className="sr-only">Open menu</span>
+              <span className="sr-only">
+                Open actions for {patientName} in {clinicName}
+              </span>
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -80,28 +84,25 @@ export const clinicPatientColumns: ColumnDef<ClinicPatient>[] = [
             >
               View Details
             </DropdownMenuItem>
-            <PermissionWrapper permissions={[permissions.manageClinicPatients]}>
-              <DropdownMenuItem
-                onClick={() => {
-                  setSelectedClinicPatient(row.original);
-                  setOpen(true);
-                }}
-              >
-                Edit Assignment
-              </DropdownMenuItem>
-            </PermissionWrapper>
-            <PermissionWrapper permissions={[permissions.manageClinicPatients]}>
-              <DropdownMenuItem
-                onClick={() => {
-                  if (row.original.id) {
-                    handleDelete(row.original.id);
-                  }
-                }}
-                className="text-red-600"
-              >
-                Remove Assignment
-              </DropdownMenuItem>
-            </PermissionWrapper>
+            {canManageClinicPatients && (
+              <>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSelectedClinicPatient(row.original);
+                    setOpen(true);
+                  }}
+                >
+                  Edit Assignment
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => handleDelete(row.original)}
+                  className="text-red-600 focus:text-red-600"
+                >
+                  Remove from Clinic
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       );
