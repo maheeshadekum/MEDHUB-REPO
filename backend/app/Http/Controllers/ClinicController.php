@@ -25,15 +25,23 @@ class ClinicController extends Controller
 
         $query = Clinic::with(['hospital:id,name', 'doctor:id,name,email']);
 
+        $scopedHospitalId = $this->getClinicOptionHospitalScope($request);
+
+        if ($scopedHospitalId === false) {
+            return response()->json(['message' => 'A hospital assignment is required'], 403);
+        }
+
         // Filter by hospital if provided
-        if ($hospitalId) {
-            $query->where('hospital_id', $hospitalId);
-        } elseif ($request->user()->role->name === 'hospital_admin') {
-            // If user is hospital admin, only show clinics from their hospital
-            $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-            if ($userHospitalId) {
-                $query->where('hospital_id', $userHospitalId);
+        if (is_int($scopedHospitalId)) {
+            if ($hospitalId !== null && (int) $hospitalId !== $scopedHospitalId) {
+                return response()->json([
+                    'message' => 'You can only view clinics in your hospital'
+                ], 403);
             }
+
+            $query->where('hospital_id', $scopedHospitalId);
+        } elseif ($hospitalId) {
+            $query->where('hospital_id', $hospitalId);
         }
 
         if ($search) {
@@ -290,14 +298,16 @@ class ClinicController extends Controller
             return response()->json(['message' => 'Hospital not found'], 404);
         }
 
-        // Check if user has permission to view clinics
-        if ($request->user()->role->name === 'hospital_admin') {
-            $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
-            if ($userHospitalId !== (int)$hospitalId) {
-                return response()->json([
-                    'message' => 'You can only view clinics in your hospital'
-                ], 403);
-            }
+        $scopedHospitalId = $this->getClinicOptionHospitalScope($request);
+
+        if ($scopedHospitalId === false) {
+            return response()->json(['message' => 'A hospital assignment is required'], 403);
+        }
+
+        if (is_int($scopedHospitalId) && $scopedHospitalId !== (int) $hospitalId) {
+            return response()->json([
+                'message' => 'You can only view clinics in your hospital'
+            ], 403);
         }
 
         $clinics = Clinic::with(['doctor:id,name,email'])
@@ -373,5 +383,19 @@ class ClinicController extends Controller
             ->get();
 
         return response()->json($doctors);
+    }
+
+    /**
+     * Resolve Hospital-scoped Clinic option access for approved staff roles.
+     */
+    private function getClinicOptionHospitalScope(Request $request): int|false|null
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role?->name, ['hospital_admin', 'receptionist'], true)) {
+            return null;
+        }
+
+        return $user->hospital_id ? (int) $user->hospital_id : false;
     }
 }
