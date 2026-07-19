@@ -62,10 +62,7 @@ export const clinicColumns: ColumnDef<Clinic>[] = [
           <DropdownMenuContent align="end">
             <DropdownMenuLabel>Actions</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <PermissionWrapper
-              permissions={[permissions.manageClinic]}
-              roles={["super_admin", "hospital_admin"]}
-            >
+            <PermissionWrapper permissions={[permissions.manageHospitals]}>
               <DropdownMenuItem
                 onClick={() => {
                   setSelectedClinic(row.original);
@@ -75,10 +72,7 @@ export const clinicColumns: ColumnDef<Clinic>[] = [
                 Edit Clinic
               </DropdownMenuItem>
             </PermissionWrapper>
-            <PermissionWrapper
-              permissions={[permissions.manageClinic]}
-              roles={["super_admin", "hospital_admin"]}
-            >
+            <PermissionWrapper permissions={[permissions.manageHospitals]}>
               <DropdownMenuItem
                 onClick={() => {
                   setShowDetails(true);

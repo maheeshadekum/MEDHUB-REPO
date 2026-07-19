@@ -34,7 +34,6 @@ export function NavMain({
       | IconType;
     isActive?: boolean;
     permissions?: string[];
-    roles?: string[];
     items?: {
       title: string;
       url: string;
@@ -62,7 +61,6 @@ export function NavMain({
               <PermissionWrapper
                 key={item.title}
                 permissions={item.permissions ?? null}
-                roles={item.roles}
               >
                 <Collapsible
                   key={item.title}
@@ -113,7 +111,6 @@ export function NavMain({
               <PermissionWrapper
                 key={item.title}
                 permissions={item.permissions ?? null}
-                roles={item.roles}
               >
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild isActive={pathname === item.url}>

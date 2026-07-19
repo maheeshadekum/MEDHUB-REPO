@@ -25,23 +25,15 @@ class ClinicController extends Controller
 
         $query = Clinic::with(['hospital:id,name', 'doctor:id,name,email']);
 
-        $scopedHospitalId = $this->getClinicOptionHospitalScope($request);
-
-        if ($scopedHospitalId === false) {
-            return response()->json(['message' => 'A hospital assignment is required'], 403);
-        }
-
         // Filter by hospital if provided
-        if (is_int($scopedHospitalId)) {
-            if ($hospitalId !== null && (int) $hospitalId !== $scopedHospitalId) {
-                return response()->json([
-                    'message' => 'You can only view clinics in your hospital'
-                ], 403);
-            }
-
-            $query->where('hospital_id', $scopedHospitalId);
-        } elseif ($hospitalId) {
+        if ($hospitalId) {
             $query->where('hospital_id', $hospitalId);
+        } elseif ($request->user()->role->name === 'hospital_admin') {
+            // If user is hospital admin, only show clinics from their hospital
+            $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
+            if ($userHospitalId) {
+                $query->where('hospital_id', $userHospitalId);
+            }
         }
 
         if ($search) {
@@ -69,30 +61,70 @@ class ClinicController extends Controller
      */
     public function store(Request $request)
     {
-        $user = $request->user();
-        $role = $user->role?->name;
+        DB::beginTransaction();
 
-        if (!in_array($role, ['super_admin', 'hospital_admin'], true)) {
-            return response()->json(['message' => 'Forbidden'], 403);
+        try {
+            // Validate request
+            $request->validate([
+                'name' => 'required|string|max:255',
+                'description' => 'required|string|max:500',
+                'doctor_id' => 'required|exists:users,id',
+                'location' => 'required|string|max:255',
+                'total_hourly_tokens' => 'integer|min:1|max:1000',
+                'self_hourly_tokens' => 'integer|min:1|max:1000',
+            ]);
+
+            // get hospital_id from users associated hospitals
+            $hospitalId = $request->user()->hospitals()->first()->id ?? null;
+            if (!$hospitalId) {
+                return response()->json(['message' => 'User does not belong to any hospital'], 403);
+            }
+            // add hospital_id to request
+            $request->merge(['hospital_id' => $hospitalId]);
+
+            // Validate that self_hourly_tokens is not greater than total_hourly_tokens
+            if ($request->self_hourly_tokens > $request->total_hourly_tokens) {
+                return response()->json([
+                    'message' => 'Self hourly tokens cannot be greater than total hourly tokens'
+                ], 400);
+            }
+
+            // Validate that doctor belongs to the specified hospital
+            $doctor = User::find($request->doctor_id);
+            if (!$doctor->hospitals->pluck('id')->contains($request->hospital_id)) {
+                return response()->json([
+                    'message' => 'Doctor does not belong to the specified hospital'
+                ], 400);
+            }
+
+            // Check if user has permission to create clinic in this hospital
+            if ($request->user()->role->name === 'hospital_admin') {
+                $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
+                if ($userHospitalId !== (int)$request->hospital_id) {
+                    return response()->json([
+                        'message' => 'You can only create clinics in your hospital'
+                    ], 403);
+                }
+            }
+
+            // Create clinic
+            $clinic = Clinic::create($request->all());
+
+            // Load relationships for response
+            $clinic->load(['hospital:id,name', 'doctor:id,name,email']);
+
+            DB::commit();
+
+            return response()->json($clinic, 201);
+        } catch (ValidationException $e) {
+            DB::rollBack();
+            return response()->json([
+                'message' => $e->validator->errors()->first()
+            ], 400);
+        } catch (Exception $e) {
+            DB::rollBack();
+            return response()->json(['error' => $e->getMessage()], 500);
         }
-
-        if ($role === 'hospital_admin' && !$user->hospital_id) {
-            return response()->json(['message' => 'User does not belong to any hospital'], 403);
-        }
-
-        $validated = $this->validateClinic($request);
-        $hospitalId = (int) $validated['hospital_id'];
-
-        if ($role === 'hospital_admin' && (int) $user->hospital_id !== $hospitalId) {
-            return response()->json(['message' => 'You can only create clinics in your hospital'], 403);
-        }
-
-        $this->validateDoctorForHospital((int) $validated['doctor_id'], $hospitalId);
-
-        $clinic = DB::transaction(fn() => Clinic::create($validated));
-        $clinic->load(['hospital:id,name', 'doctor:id,name,email']);
-
-        return response()->json($clinic, 201);
     }
 
     /**
@@ -126,39 +158,78 @@ class ClinicController extends Controller
      */
     public function update(Request $request, $id)
     {
-        $user = $request->user();
-        $role = $user->role?->name;
-
-        if (!in_array($role, ['super_admin', 'hospital_admin'], true)) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if ($role === 'hospital_admin' && !$user->hospital_id) {
-            return response()->json(['message' => 'User does not belong to any hospital'], 403);
-        }
-
         $clinic = Clinic::find($id);
 
         if (!$clinic) {
             return response()->json(['message' => 'Clinic not found'], 404);
         }
 
-        $validated = $this->validateClinic($request);
-        $hospitalId = (int) $validated['hospital_id'];
+        DB::beginTransaction();
 
-        if ($role === 'hospital_admin' && (
-            (int) $user->hospital_id !== (int) $clinic->hospital_id ||
-            (int) $user->hospital_id !== $hospitalId
-        )) {
-            return response()->json(['message' => 'You can only update clinics in your hospital'], 403);
+        try {
+            // Validate request
+            $request->validate([
+                'name' => 'required|string|max:255',
+                'description' => 'required|string|max:500',
+                'doctor_id' => 'required|exists:users,id',
+                'location' => 'required|string|max:255',
+                'total_hourly_tokens' => 'integer|min:1|max:1000',
+                'self_hourly_tokens' => 'integer|min:1|max:1000',
+            ]);
+
+            // get hospital_id from users associated hospitals
+            $hospitalId = $request->user()->hospitals()->first()->id ?? null;
+            if (!$hospitalId) {
+                return response()->json(['message' => 'User does not belong to any hospital'], 403);
+            }
+            // add hospital_id to request
+            $request->merge(['hospital_id' => $hospitalId]);
+
+            // Validate that self_hourly_tokens is not greater than total_hourly_tokens
+            if ($request->self_hourly_tokens > $request->total_hourly_tokens) {
+                return response()->json([
+                    'message' => 'Self hourly tokens cannot be greater than total hourly tokens'
+                ], 400);
+            }
+
+            // Validate that doctor belongs to the specified hospital
+            $doctor = User::find($request->doctor_id);
+            if (!$doctor->hospitals->pluck('id')->contains($request->hospital_id)) {
+                return response()->json([
+                    'message' => 'Doctor does not belong to the specified hospital'
+                ], 400);
+            }
+
+            // Check if user has permission to update clinic
+            if ($request->user()->role->name === 'hospital_admin') {
+                $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
+                if ($userHospitalId !== $clinic->hospital_id || $userHospitalId !== (int)$request->hospital_id) {
+                    return response()->json([
+                        'message' => 'You can only update clinics in your hospital',
+                        'hospital_id' => $userHospitalId,
+                        'clinic_hospital_id' => $clinic->hospital_id,
+                    ], 403);
+                }
+            }
+
+            // Update clinic
+            $clinic->update($request->all());
+
+            // Load relationships for response
+            $clinic->load(['hospital:id,name', 'doctor:id,name,email']);
+
+            DB::commit();
+
+            return response()->json($clinic);
+        } catch (ValidationException $e) {
+            DB::rollBack();
+            return response()->json([
+                'message' => $e->validator->errors()->first()
+            ], 400);
+        } catch (Exception $e) {
+            DB::rollBack();
+            return response()->json(['error' => $e->getMessage()], 500);
         }
-
-        $this->validateDoctorForHospital((int) $validated['doctor_id'], $hospitalId);
-
-        DB::transaction(fn() => $clinic->update($validated));
-        $clinic->load(['hospital:id,name', 'doctor:id,name,email']);
-
-        return response()->json($clinic);
     }
 
     /**
@@ -219,16 +290,14 @@ class ClinicController extends Controller
             return response()->json(['message' => 'Hospital not found'], 404);
         }
 
-        $scopedHospitalId = $this->getClinicOptionHospitalScope($request);
-
-        if ($scopedHospitalId === false) {
-            return response()->json(['message' => 'A hospital assignment is required'], 403);
-        }
-
-        if (is_int($scopedHospitalId) && $scopedHospitalId !== (int) $hospitalId) {
-            return response()->json([
-                'message' => 'You can only view clinics in your hospital'
-            ], 403);
+        // Check if user has permission to view clinics
+        if ($request->user()->role->name === 'hospital_admin') {
+            $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
+            if ($userHospitalId !== (int)$hospitalId) {
+                return response()->json([
+                    'message' => 'You can only view clinics in your hospital'
+                ], 403);
+            }
         }
 
         $clinics = Clinic::with(['doctor:id,name,email'])
@@ -281,85 +350,28 @@ class ClinicController extends Controller
             return response()->json(['message' => 'Hospital not found'], 404);
         }
 
-        $user = $request->user();
-        $role = $user->role?->name;
-
-        if (!in_array($role, ['super_admin', 'hospital_admin'], true)) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if ($role === 'hospital_admin' && (int) $user->hospital_id !== (int) $hospitalId) {
-            return response()->json(['message' => 'You can only view doctors in your hospital'], 403);
+        // Check if user has permission
+        if ($request->user()->role->name === 'hospital_admin') {
+            $userHospitalId = $request->user()->hospitals()->first()->id ?? null;
+            if ($userHospitalId !== (int)$hospitalId) {
+                return response()->json([
+                    'message' => 'You can only view doctors in your hospital'
+                ], 403);
+            }
         }
 
         // Get doctors who belong to this hospital and have doctor role
         $doctors = User::select('id', 'name', 'email')
-            ->where('hospital_id', $hospitalId)
+            ->whereHas('hospitals', function ($query) use ($hospitalId) {
+                $query->where('id', $hospitalId);
+            })
             ->whereHas('role', function ($query) {
                 $query->where('name', 'doctor');
             })
-            ->where('status', 'working')
-            ->when($request->input('search'), function ($query, $search) {
-                $query->where(function ($doctorQuery) use ($search) {
-                    $doctorQuery->where('name', 'like', '%' . $search . '%')
-                        ->orWhere('email', 'like', '%' . $search . '%');
-                });
-            })
+            ->where('status', 'active')
             ->orderBy('name')
             ->get();
 
         return response()->json($doctors);
-    }
-
-    /**
-     * Validate clinic data shared by create and update.
-     *
-     * @return array<string, mixed>
-     */
-    private function validateClinic(Request $request): array
-    {
-        return $request->validate([
-            'name' => 'required|string|max:255',
-            'hospital_id' => 'required|integer|exists:hospitals,id',
-            'description' => 'required|string|max:500',
-            'doctor_id' => 'required|integer|exists:users,id',
-            'location' => 'required|string|max:255',
-            'total_hourly_tokens' => 'required|integer|min:1|max:1000',
-            'self_hourly_tokens' => 'required|integer|min:1|max:1000|lte:total_hourly_tokens',
-        ]);
-    }
-
-    /**
-     * Ensure the selected user is a working doctor in the target hospital.
-     */
-    private function validateDoctorForHospital(int $doctorId, int $hospitalId): void
-    {
-        $doctorExists = User::whereKey($doctorId)
-            ->where('hospital_id', $hospitalId)
-            ->where('status', 'working')
-            ->whereHas('role', function ($query) {
-                $query->where('name', 'doctor');
-            })
-            ->exists();
-
-        if (!$doctorExists) {
-            throw ValidationException::withMessages([
-                'doctor_id' => ['Select a working doctor assigned to the selected hospital.'],
-            ]);
-        }
-    }
-
-    /**
-     * Resolve Hospital-scoped Clinic option access for approved staff roles.
-     */
-    private function getClinicOptionHospitalScope(Request $request): int|false|null
-    {
-        $user = $request->user();
-
-        if (!in_array($user->role?->name, ['hospital_admin', 'receptionist'], true)) {
-            return null;
-        }
-
-        return $user->hospital_id ? (int) $user->hospital_id : false;
     }
 }

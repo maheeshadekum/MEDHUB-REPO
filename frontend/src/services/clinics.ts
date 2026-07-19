@@ -7,16 +7,6 @@ type ClinicWithoutId = z.infer<typeof clinicSchema>;
 export type Clinic = ClinicWithoutId & {
   doctor_id: number | null;
   id?: number;
-  hospital?: {
-    id: number;
-    name: string;
-  };
-};
-
-export type ClinicDoctor = {
-  id: number;
-  name: string;
-  email: string;
 };
 
 export const clinicsServices = {
@@ -44,22 +34,6 @@ export const clinicsServices = {
   getClinicById: async (id: number) => {
     const { data } = await api.get(`/clinics/${id}`);
     return data as Clinic;
-  },
-
-  // Get clinics belonging to a selected hospital
-  getClinicsByHospital: async (hospitalId: number) => {
-    const { data } = await api.get(`/clinics/hospital/${hospitalId}`);
-    return data as Clinic[];
-  },
-
-  // Get working doctors assigned to a hospital
-  getAvailableDoctors: async (hospitalId: number, search?: string) => {
-    const { data } = await api.get(
-      `/hospitals/${hospitalId}/doctors${
-        search ? `?search=${encodeURIComponent(search)}` : ""
-      }`,
-    );
-    return data as ClinicDoctor[];
   },
 
   // Create a new clinic

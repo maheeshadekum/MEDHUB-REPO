@@ -1,4 +1,5 @@
 import type { ClinicDate } from "@/services/clinic-dates";
+import type { Clinic } from "@/services/clinics";
 import type { FC } from "react";
 import type { z } from "zod";
 
@@ -7,7 +8,6 @@ import { clinicDateColumns } from "@/components/custom/clinic-dates/table-column
 import {
   Button,
   Calendar,
-  Combobox,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -30,18 +30,13 @@ import {
   SelectValue,
 } from "@/components/ui";
 import { permissions } from "@/constants/permissions";
-import { useAuth } from "@/hooks/use-auth";
 import {
   useClinicDates,
   useCreateClinicDate,
   useUpdateClinicDate,
   useUpdateClinicDateStatus,
 } from "@/hooks/use-clinic-dates";
-import {
-  useClinicHospitals,
-  useClinics,
-  useClinicsByHospital,
-} from "@/hooks/use-clinics";
+import { useClinics } from "@/hooks/use-clinics";
 import { PermissionWrapper } from "@/providers/permission-wrapper";
 import { cn } from "@/utils";
 import { clinicDateSchema } from "@/validations/clinic-dates";
@@ -56,7 +51,6 @@ import { PiSpinnerGapBold } from "react-icons/pi";
 import { toast } from "sonner";
 
 const clinicDateDefaultValues: ClinicDate = {
-  hospital_id: 0,
   clinic_id: 0,
   date: new Date(),
   start_time: "",
@@ -65,9 +59,6 @@ const clinicDateDefaultValues: ClinicDate = {
 };
 
 export const ClinicDates: FC = React.memo(() => {
-  const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
-  const isHospitalAdmin = user?.role === "hospital_admin";
   const [open, setOpen] = useState<boolean>(false);
   const [showDetails, setShowDetails] = useState<boolean>(false);
   const [showStatusDialog, setShowStatusDialog] = useState<boolean>(false);
@@ -89,20 +80,10 @@ export const ClinicDates: FC = React.memo(() => {
     useState<ClinicDate | null>(null);
 
   // Fetch clinics for dropdown
-  const { data: allClinicsData } = useClinics(
-    {
-      currentPage: 1,
-      pageSize: 100,
-    },
-    isSuperAdmin,
-  );
-  const { data: assignedClinicsData } = useClinicsByHospital(
-    user?.hospital_id || 0,
-    isHospitalAdmin && Boolean(user?.hospital_id),
-  );
-  const clinicsForFilter = isSuperAdmin
-    ? allClinicsData?.clinics || []
-    : assignedClinicsData || [];
+  const { data: clinicsData } = useClinics({
+    currentPage: 1,
+    pageSize: 100,
+  });
 
   // clear selected clinic date when dialog closes
   const closeDialog = () => {
@@ -132,6 +113,7 @@ export const ClinicDates: FC = React.memo(() => {
         open={open}
         onClose={closeDialog}
         data={selectedClinicDate}
+        clinicsData={clinicsData?.clinics || []}
       />
 
       {/* clinic date status dialog */}
@@ -146,7 +128,7 @@ export const ClinicDates: FC = React.memo(() => {
         <ClinicDateTable
           columns={clinicDateColumns}
           data={data?.clinicDates || []}
-          clinicsData={clinicsForFilter}
+          clinicsData={clinicsData?.clinics || []}
           search={search}
           setSearch={setSearch}
           statusFilter={statusFilter}
@@ -167,10 +149,7 @@ export const ClinicDates: FC = React.memo(() => {
             endPage: data?.endPage || 0,
           }}
         >
-          <PermissionWrapper
-            permissions={[permissions.manageHospitals]}
-            roles={["super_admin", "hospital_admin"]}
-          >
+          <PermissionWrapper permissions={[permissions.manageHospitals]}>
             <Button
               size={"sm"}
               variant={"outline"}
@@ -198,14 +177,8 @@ const ClinicDateDialog: FC<{
   open: boolean;
   onClose: () => void;
   data?: ClinicDate | null;
-}> = React.memo(({ open, onClose, data }) => {
-  const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
-  const isHospitalAdmin = user?.role === "hospital_admin";
-  const isEditing = Boolean(data);
-  const assignedHospitalId = user?.hospital_id || 0;
-  const hasAssignedHospital = assignedHospitalId > 0;
-  const [hospitalSearch, setHospitalSearch] = useState("");
+  clinicsData: Clinic[];
+}> = React.memo(({ open, onClose, data, clinicsData }) => {
   const [errors, setErrors] = useState<{ [key: string]: string[] | string }>(
     {},
   );
@@ -218,18 +191,6 @@ const ClinicDateDialog: FC<{
     resolver: zodResolver(clinicDateSchema),
     defaultValues: clinicDateDefaultValues,
   });
-
-  const selectedHospitalId = form.watch("hospital_id");
-  const { data: hospitalsData, isLoading: isHospitalsLoading } =
-    useClinicHospitals(
-      hospitalSearch,
-      open && isSuperAdmin && !isEditing,
-    );
-  const { data: hospitalClinics, isLoading: isClinicsLoading } =
-    useClinicsByHospital(
-      selectedHospitalId,
-      open && !isEditing && selectedHospitalId > 0,
-    );
 
   // form submit handler
   const onSubmit = async (values: z.infer<typeof clinicDateSchema>) => {
@@ -282,41 +243,20 @@ const ClinicDateDialog: FC<{
     if (data) {
       form.reset({
         ...data,
-        hospital_id: data.clinic?.hospital_id || 0,
         status: data.status ?? "scheduled",
         date: data.date ? new Date(data.date) : new Date(),
       });
     } else {
-      form.reset({
-        ...clinicDateDefaultValues,
-        hospital_id: isHospitalAdmin ? assignedHospitalId : 0,
-      });
+      form.reset(clinicDateDefaultValues);
     }
-    setHospitalSearch("");
-  }, [assignedHospitalId, data, form, isHospitalAdmin]);
-
-  const hospitalName = isEditing
-    ? data?.clinic?.hospital?.name || "Unknown hospital"
-    : user?.hospital || "Assigned hospital";
-  const clinicName = data?.clinic?.name || "Unknown clinic";
-  const selectedHospitalName =
-    hospitalsData?.hospitals.find(
-      (hospital) => hospital.id === selectedHospitalId,
-    )?.name || hospitalName;
-  const savingDisabled =
-    createPending ||
-    updatePending ||
-    (!isEditing && isHospitalAdmin && !hasAssignedHospital);
+  }, [data, form]);
 
   return (
     <Dialog
       open={open}
       onOpenChange={() => {
         onClose();
-        form.reset({
-          ...clinicDateDefaultValues,
-          hospital_id: isHospitalAdmin ? assignedHospitalId : 0,
-        });
+        form.reset(clinicDateDefaultValues);
       }}
     >
       <DialogContent className="max-h-[80vh] max-w-xl overflow-y-auto">
@@ -335,97 +275,41 @@ const ClinicDateDialog: FC<{
             onSubmit={form.handleSubmit(onSubmit)}
             className="space-y-3 overflow-y-auto p-1"
           >
-            {!isEditing && isSuperAdmin && (
-              <FormField
-                control={form.control}
-                name="hospital_id"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Hospital</FormLabel>
-                    <FormControl>
-                      <Combobox
-                        isLoading={isHospitalsLoading}
-                        items={
-                          hospitalsData?.hospitals.map((hospital) => ({
-                            label: hospital.name,
-                            value: hospital.id?.toString() || "",
-                          })) || []
-                        }
-                        onChange={setHospitalSearch}
-                        placeholder="Hospital"
-                        search={hospitalSearch}
-                        setValue={(value) => {
-                          field.onChange(Number(value));
-                          form.setValue("clinic_id", 0, {
-                            shouldValidate: true,
-                          });
-                        }}
-                        value={field.value > 0 ? field.value.toString() : ""}
-                      />
+            {/* clinic_id */}
+            <FormField
+              control={form.control}
+              name="clinic_id"
+              render={({ field }) => (
+                <FormItem className="w-full">
+                  <FormLabel>Clinic</FormLabel>
+                  <Select
+                    onValueChange={(value) => field.onChange(Number(value))}
+                    value={
+                      field.value === 0 ? undefined : field.value?.toString()
+                    }
+                  >
+                    <FormControl className="w-full">
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a clinic" />
+                      </SelectTrigger>
                     </FormControl>
-                    <FormMessage>
-                      {errors["hospital_id"] && errors["hospital_id"][0]}
-                    </FormMessage>
-                  </FormItem>
-                )}
-              />
-            )}
-
-            {(isEditing || isHospitalAdmin) && (
-              <div className="space-y-2">
-                <FormLabel>Hospital</FormLabel>
-                <Input value={hospitalName} disabled readOnly />
-                {!isEditing && isHospitalAdmin && !hasAssignedHospital && (
-                  <p className="text-sm font-medium text-destructive">
-                    No hospital is assigned to your account. Contact a Super
-                    Admin before creating a Clinic Date.
-                  </p>
-                )}
-              </div>
-            )}
-
-            {isEditing ? (
-              <div className="space-y-2">
-                <FormLabel>Clinic</FormLabel>
-                <Input value={clinicName} disabled readOnly />
-              </div>
-            ) : (
-              <FormField
-                control={form.control}
-                name="clinic_id"
-                render={({ field }) => (
-                  <FormItem className="w-full">
-                    <FormLabel>Clinic</FormLabel>
-                    <Select
-                      disabled={selectedHospitalId <= 0 || isClinicsLoading}
-                      onValueChange={(value) => field.onChange(Number(value))}
-                      value={
-                        field.value === 0 ? undefined : field.value?.toString()
-                      }
-                    >
-                      <FormControl className="w-full">
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select a clinic" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {hospitalClinics?.map((clinic) => (
-                          <SelectItem
-                            key={clinic.id}
-                            value={clinic.id?.toString() || ""}
-                          >
-                            {clinic.name} — {selectedHospitalName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage>
-                      {errors["clinic_id"] && errors["clinic_id"][0]}
-                    </FormMessage>
-                  </FormItem>
-                )}
-              />
-            )}
+                    <SelectContent>
+                      {clinicsData?.map((clinic) => (
+                        <SelectItem
+                          key={clinic.id}
+                          value={clinic.id?.toString() || ""}
+                        >
+                          {clinic.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage>
+                    {errors["clinic_id"] && errors["clinic_id"][0]}
+                  </FormMessage>
+                </FormItem>
+              )}
+            />
 
             {/* date */}
             <FormField
@@ -546,7 +430,7 @@ const ClinicDateDialog: FC<{
 
             <div className="flex justify-end">
               <Button
-                disabled={savingDisabled}
+                disabled={createPending || updatePending}
                 type="submit"
                 className="mt-3 w-full max-w-40"
               >
@@ -630,14 +514,6 @@ const ShowDetails: FC<{
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-0.5 text-sm">
-          <div>
-            <span className="font-medium">Hospital:</span>{" "}
-            {showDetails?.clinic?.hospital?.name || "—"}
-          </div>
-          <div>
-            <span className="font-medium">Clinic:</span>{" "}
-            {showDetails?.clinic?.name || "—"}
-          </div>
           <div>
             <span className="font-medium">Date:</span>{" "}
             {showDetails?.date &&

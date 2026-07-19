@@ -150,10 +150,7 @@ class AuthController extends Controller
             }
 
             // create token
-            $token = $this->refresh(
-                $user,
-                rememberMe: $request->boolean('rememberMe')
-            );
+            $token = $this->refresh($user, rememberMe: $request->rememberMe);
 
             // commit transaction
             DB::commit();

@@ -23,13 +23,11 @@ import {
 } from "@/components/ui";
 import { permissions } from "@/constants/permissions";
 import {
-  useAvailableClinicDoctors,
-  useClinicHospitals,
   useClinics,
   useCreateClinic,
   useUpdateClinic,
 } from "@/hooks/use-clinics";
-import { useAuth } from "@/hooks/use-auth";
+import { useUsers } from "@/hooks/use-users";
 import { PermissionWrapper } from "@/providers/permission-wrapper";
 import { clinicSchema } from "@/validations/clinics";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -41,7 +39,6 @@ import { toast } from "sonner";
 
 const clinicDefaultValues: Clinic = {
   name: "",
-  hospital_id: 0,
   description: "",
   doctor_id: 0,
   location: "",
@@ -106,10 +103,7 @@ export const Clinics: FC = React.memo(() => {
             endPage: data?.endPage || 0,
           }}
         >
-          <PermissionWrapper
-            permissions={[permissions.manageClinic]}
-            roles={["super_admin", "hospital_admin"]}
-          >
+          <PermissionWrapper permissions={[permissions.manageHospitals]}>
             <Button
               size={"sm"}
               variant={"outline"}
@@ -138,11 +132,7 @@ const ClinicDialog: FC<{
   onClose: () => void;
   data?: Clinic | null;
 }> = React.memo(({ open, onClose, data }) => {
-  const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
-  const isHospitalAdmin = user?.role === "hospital_admin";
   const [doctorSearch, setDoctorSearch] = useState("");
-  const [hospitalSearch, setHospitalSearch] = useState("");
   const [errors, setErrors] = useState<{ [key: string]: string[] | string }>(
     {},
   );
@@ -151,21 +141,18 @@ const ClinicDialog: FC<{
   const { mutateAsync: updateClinic, isPending: updatePending } =
     useUpdateClinic();
 
+  // Fetch doctors for dropdowns
+  const { data: usersData, isLoading: isDoctorsLoading } = useUsers({
+    currentPage: 1,
+    pageSize: 100,
+    role: "doctor",
+    search: doctorSearch,
+  });
+
   const form = useForm<z.infer<typeof clinicSchema>>({
     resolver: zodResolver(clinicSchema),
     defaultValues: clinicDefaultValues,
   });
-
-  const selectedHospitalId = form.watch("hospital_id");
-  const selectedDoctorId = form.watch("doctor_id");
-  const { data: hospitalsData, isLoading: isHospitalsLoading } =
-    useClinicHospitals(hospitalSearch, open && isSuperAdmin);
-  const { data: doctors, isLoading: isDoctorsLoading } =
-    useAvailableClinicDoctors(
-      selectedHospitalId,
-      doctorSearch,
-      open && selectedHospitalId > 0,
-    );
 
   // form submit handler
   const onSubmit = async (values: z.infer<typeof clinicSchema>) => {
@@ -209,31 +196,18 @@ const ClinicDialog: FC<{
   // set form values if data is available
   useEffect(() => {
     if (data) {
-      form.reset({
-        ...data,
-        hospital_id: isHospitalAdmin
-          ? user?.hospital_id || 0
-          : data.hospital_id,
-      });
+      form.reset(data);
     } else {
-      form.reset({
-        ...clinicDefaultValues,
-        hospital_id: isHospitalAdmin ? user?.hospital_id || 0 : 0,
-      });
+      form.reset(clinicDefaultValues);
     }
-    setDoctorSearch("");
-    setHospitalSearch("");
-  }, [data, form, isHospitalAdmin, user?.hospital_id]);
+  }, [data, form]);
 
   return (
     <Dialog
       open={open}
       onOpenChange={() => {
         onClose();
-        form.reset({
-          ...clinicDefaultValues,
-          hospital_id: isHospitalAdmin ? user?.hospital_id || 0 : 0,
-        });
+        form.reset(clinicDefaultValues);
       }}
     >
       <DialogContent className="max-h-[80vh] max-w-xl overflow-y-auto">
@@ -250,43 +224,6 @@ const ClinicDialog: FC<{
             onSubmit={form.handleSubmit(onSubmit)}
             className="space-y-3 overflow-y-auto p-1"
           >
-            {isSuperAdmin && (
-              <FormField
-                control={form.control}
-                name="hospital_id"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Hospital</FormLabel>
-                    <FormControl>
-                      <Combobox
-                        isLoading={isHospitalsLoading}
-                        items={
-                          hospitalsData?.hospitals.map((hospital) => ({
-                            label: hospital.name,
-                            value: hospital.id?.toString() || "",
-                          })) || []
-                        }
-                        onChange={setHospitalSearch}
-                        placeholder="Hospital"
-                        search={hospitalSearch}
-                        setValue={(value) => {
-                          field.onChange(Number(value));
-                          form.setValue("doctor_id", 0, {
-                            shouldValidate: true,
-                          });
-                          setDoctorSearch("");
-                        }}
-                        value={field.value === 0 ? "" : field.value.toString()}
-                      />
-                    </FormControl>
-                    <FormMessage>
-                      {errors["hospital_id"] && errors["hospital_id"][0]}
-                    </FormMessage>
-                  </FormItem>
-                )}
-              />
-            )}
-
             {/* name */}
             <FormField
               control={form.control}
@@ -327,34 +264,25 @@ const ClinicDialog: FC<{
             />
 
             {/* doctor_id */}
-            <FormField
-              control={form.control}
-              name="doctor_id"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Doctor</FormLabel>
-                  <FormControl>
-                    <Combobox
-                      disabled={selectedHospitalId <= 0}
-                      isLoading={isDoctorsLoading}
-                      items={
-                        doctors?.map((doctor) => ({
-                          label: doctor.name,
-                          value: doctor.id.toString(),
-                        })) || []
-                      }
-                      onChange={setDoctorSearch}
-                      placeholder="Doctor"
-                      search={doctorSearch}
-                      setValue={(value) => field.onChange(Number(value))}
-                      value={field.value === 0 ? "" : field.value.toString()}
-                    />
-                  </FormControl>
-                  <FormMessage>
-                    {errors["doctor_id"] && errors["doctor_id"][0]}
-                  </FormMessage>
-                </FormItem>
-              )}
+            <Combobox
+              isLoading={isDoctorsLoading}
+              items={
+                usersData?.users
+                  .filter((user) => user.role === "doctor")
+                  ?.map((doctor) => ({
+                    label: doctor.name,
+                    value: doctor.id?.toString() || "",
+                  })) || []
+              }
+              onChange={setDoctorSearch}
+              placeholder="Doctor"
+              search={doctorSearch}
+              setValue={(value) => form.setValue("doctor_id", Number(value))}
+              value={
+                form.watch("doctor_id") === 0
+                  ? ""
+                  : form.watch("doctor_id").toString()
+              }
             />
 
             {/* location */}
@@ -430,12 +358,7 @@ const ClinicDialog: FC<{
 
             <div className="flex justify-end">
               <Button
-                disabled={
-                  createPending ||
-                  updatePending ||
-                  selectedHospitalId <= 0 ||
-                  selectedDoctorId <= 0
-                }
+                disabled={createPending || updatePending}
                 type="submit"
                 className="mt-3 w-full max-w-40"
               >

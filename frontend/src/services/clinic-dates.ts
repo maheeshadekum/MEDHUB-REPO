@@ -62,15 +62,9 @@ export const clinicDatesServices = {
 
   // Update an existing clinic date
   updateClinicDate: async (clinicDate: ClinicDate) => {
-    const schedule = {
-      date: clinicDate.date,
-      start_time: clinicDate.start_time,
-      end_time: clinicDate.end_time,
-      status: clinicDate.status,
-    };
     const { data } = await api.put(
       `/clinic-dates/${clinicDate.id}`,
-      schedule,
+      clinicDate,
     );
     return data;
   },

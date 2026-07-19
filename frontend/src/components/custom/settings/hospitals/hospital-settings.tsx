@@ -13,10 +13,8 @@ import {
   Switch,
   Textarea,
 } from "@/components/ui";
-import {
-  useHospitalById,
-  useUpdateHospitalSettings,
-} from "@/hooks/use-hospitals";
+import { useAuth } from "@/hooks/use-auth";
+import { useHospitalById, useManageHospital } from "@/hooks/use-hospitals";
 import { hospitalSchema } from "@/validations/hospitals";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useState } from "react";
@@ -25,32 +23,29 @@ import { BiError } from "react-icons/bi";
 import { PiSpinnerGapBold } from "react-icons/pi";
 import { toast } from "sonner";
 
-const hospitalDefaultValues: z.infer<typeof hospitalSchema> = {
-  name: "",
-  address: "",
-  phone: "",
-  email: "",
-  district: "",
-  location_url: "",
-  is_appointment_activated: false,
-  is_inventory_activated: false,
-};
-
-export const HospitalSettings = ({ hospitalId }: { hospitalId: number }) => {
+export const HospitalSettings = () => {
+  const { user } = useAuth();
   const [errors, setErrors] = useState<{ [key: string]: string[] | string }>(
     {},
   );
-  const { mutateAsync: updateHospitalSettings, isPending: managePending } =
-    useUpdateHospitalSettings();
-  const {
-    data: hospital,
-    isLoading: isLoadingHospital,
-    isFetched: isHospitalFetched,
-  } = useHospitalById(hospitalId);
+  const { mutateAsync: manageHospital, isPending: managePending } =
+    useManageHospital();
+  const { data: hospital, isLoading: isLoadingHospital } = useHospitalById(
+    user?.hospital_id || 0,
+  );
 
   const form = useForm<z.infer<typeof hospitalSchema>>({
     resolver: zodResolver(hospitalSchema),
-    defaultValues: hospitalDefaultValues,
+    defaultValues: {
+      name: "",
+      address: "",
+      phone: "",
+      email: "",
+      district: "",
+      location_url: "",
+      is_appointment_activated: false,
+      is_inventory_activated: false,
+    },
   });
 
   // form submit handler
@@ -59,9 +54,7 @@ export const HospitalSettings = ({ hospitalId }: { hospitalId: number }) => {
     setErrors({});
 
     // if data is available
-    if (!hospital) return;
-
-    await updateHospitalSettings({ hospitalId, hospital: values })
+    await manageHospital(values)
       .then(() => {
         toast.success("Hospital updated", {
           description: new Date().toLocaleString(),
@@ -80,20 +73,10 @@ export const HospitalSettings = ({ hospitalId }: { hospitalId: number }) => {
   useEffect(() => {
     if (hospital) {
       form.reset(hospital);
-    } else {
-      form.reset(hospitalDefaultValues);
     }
-  }, [hospital, hospitalId, form]);
+  }, [hospital, form]);
 
   if (isLoadingHospital) return <Loader />;
-
-  if (isHospitalFetched && !hospital) {
-    return (
-      <div className="w-full rounded-md border p-6 text-center text-red-600">
-        Hospital not found or could not be loaded.
-      </div>
-    );
-  }
 
   return (
     <div className="w-full flex justify-center">
@@ -276,7 +259,7 @@ export const HospitalSettings = ({ hospitalId }: { hospitalId: number }) => {
 
             <div className="flex justify-end">
               <Button
-                disabled={managePending || !hospital}
+                disabled={managePending}
                 type="submit"
                 className="mt-3 w-full max-w-40"
               >

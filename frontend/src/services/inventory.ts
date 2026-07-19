@@ -9,8 +9,7 @@ export type Inventory = InventoryWithoutId & {
   id?: number;
   available_quantity?: number;
   batches?: Batch[];
-  hospital?: Pick<Hospital, "id" | "name">;
-  nearby_suggestions?: {
+  nearby_suggestions: {
     distance_km: number;
     total_quantity: number;
     medicine: {
@@ -87,7 +86,7 @@ export const inventoryServices = {
   },
 
   // Create a new inventory
-  createInventory: async (inventory: InventoryWithoutId) => {
+  createInventory: async (inventory: Inventory) => {
     const { data } = await api.post("/inventory", inventory);
     return data;
   },

@@ -17,11 +17,7 @@ const breadcrumb = [
 export const ClinicsPage = () => {
   return (
     <PrivateRoute>
-      <PermissionWrapper
-        permissions={[permissions.manageClinic]}
-        roles={["super_admin", "hospital_admin"]}
-        is404
-      >
+      <PermissionWrapper permissions={[permissions.manageHospitals]} is404>
         <Suspense fallback={<Loader />}>
           <Layout breadcrumbs={breadcrumb}>
             <Clinics />

@@ -13,7 +13,6 @@ import {
 import { permissions } from "@/constants/permissions";
 import { PermissionWrapper } from "@/providers/permission-wrapper";
 import { MoreHorizontal } from "lucide-react";
-import { Link } from "react-router";
 
 export const hospitalColumns: ColumnDef<Hospital>[] = [
   {
@@ -84,18 +83,6 @@ export const hospitalColumns: ColumnDef<Hospital>[] = [
               >
                 Edit Hospital
               </DropdownMenuItem>
-            </PermissionWrapper>
-            <PermissionWrapper
-              permissions={[permissions.manageHospitals]}
-              roles={["super_admin"]}
-            >
-              {row.original.id && (
-                <DropdownMenuItem asChild>
-                  <Link to={`/settings/hospital/${row.original.id}`}>
-                    Configure Settings
-                  </Link>
-                </DropdownMenuItem>
-              )}
             </PermissionWrapper>
             <PermissionWrapper permissions={[permissions.viewHospitals]}>
               <DropdownMenuItem

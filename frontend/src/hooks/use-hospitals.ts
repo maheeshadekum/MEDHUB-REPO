@@ -112,29 +112,4 @@ export const useManageHospital = () => {
       return error;
     },
   });
-};
-
-// update hospital settings by selected hospital id
-export const useUpdateHospitalSettings = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({
-      hospitalId,
-      hospital,
-    }: {
-      hospitalId: number;
-      hospital: Hospital;
-    }) => hospitalsServices.updateHospitalSettings(hospitalId, hospital),
-    onSuccess: (hospital, variables) => {
-      queryClient.setQueryData(["hospital", variables.hospitalId], hospital);
-    },
-    onSettled: (_data, _error, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ["hospital", variables.hospitalId],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["hospitals"],
-      });
-    },
-  });
-};
+}

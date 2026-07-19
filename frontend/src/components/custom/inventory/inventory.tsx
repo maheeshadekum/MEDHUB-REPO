@@ -8,7 +8,6 @@ import { inventoryColumns } from "@/components/custom/inventory/table-columns";
 import {
   Button,
   Calendar,
-  Combobox,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -35,11 +34,9 @@ import {
   useAddBatchToInventory,
   useCreateInventory,
   useInventories,
-  useInventoryHospitals,
   useUpdateBatchInInventory,
   useUpdateInventory,
 } from "@/hooks/use-inventory";
-import { useAuth } from "@/hooks/use-auth";
 import { PermissionWrapper } from "@/providers/permission-wrapper";
 import { cn } from "@/utils";
 import { batchSchema, inventorySchema } from "@/validations/inventory";
@@ -53,11 +50,11 @@ import { PiSpinnerGapBold } from "react-icons/pi";
 import { toast } from "sonner";
 
 const inventoryDefaultValues: Inventory = {
-  hospital_id: 0,
   drug_name: "",
   brand_name: "",
   type: "tablet",
   weight: 100,
+  nearby_suggestions: [],
 };
 
 const batchDefaultValue: Batch = {
@@ -149,10 +146,7 @@ export const Inventories: FC = React.memo(() => {
             endPage: data?.endPage || 0,
           }}
         >
-          <PermissionWrapper
-            permissions={[permissions.manageInventories]}
-            roles={["super_admin", "pharmacist"]}
-          >
+          <PermissionWrapper permissions={[permissions.manageInventories]}>
             <Button
               size={"sm"}
               variant={"outline"}
@@ -190,13 +184,6 @@ const InventoryDialog: FC<{
   setSelectedInventory: (inventory: Inventory | null) => void;
   data?: Inventory | null;
 }> = React.memo(({ open, onClose, data, setSelectedInventory }) => {
-  const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
-  const isPharmacist = user?.role === "pharmacist";
-  const isEditing = Boolean(data);
-  const assignedHospitalId = user?.hospital_id || 0;
-  const hasAssignedHospital = assignedHospitalId > 0;
-  const [hospitalSearch, setHospitalSearch] = useState("");
   const [errors, setErrors] = useState<{ [key: string]: string[] | string }>(
     {},
   );
@@ -209,20 +196,15 @@ const InventoryDialog: FC<{
     resolver: zodResolver(inventorySchema),
     defaultValues: inventoryDefaultValues,
   });
-  const { data: hospitalsData, isLoading: isHospitalsLoading } =
-    useInventoryHospitals(hospitalSearch, open && isSuperAdmin && !isEditing);
 
   // form submit handler
   const onSubmit = async (values: z.infer<typeof inventorySchema>) => {
     setErrors({});
     if (data) {
       const updatedValues = {
+        ...values,
         id: data.id,
-        hospital_id: data.hospital_id,
-        drug_name: values.drug_name,
-        brand_name: values.brand_name,
-        type: values.type,
-        weight: values.weight,
+        nearby_suggestions: [],
       };
       await updateInventory(updatedValues)
         .then(() => {
@@ -241,7 +223,7 @@ const InventoryDialog: FC<{
           );
         });
     } else {
-      await createInventory(values)
+      await createInventory({ ...values, nearby_suggestions: [] })
         .then(() => {
           toast.success("Inventory created", {
             description: new Date().toLocaleString(),
@@ -264,33 +246,18 @@ const InventoryDialog: FC<{
     if (data) {
       form.reset({
         ...data,
-        hospital_id: data.hospital_id || assignedHospitalId,
       });
     } else {
-      form.reset({
-        ...inventoryDefaultValues,
-        hospital_id: isPharmacist ? assignedHospitalId : 0,
-      });
+      form.reset(inventoryDefaultValues);
     }
-    setHospitalSearch("");
-  }, [assignedHospitalId, data, form, isPharmacist]);
-
-  const hospitalName =
-    data?.hospital?.name || user?.hospital || "Assigned hospital";
-  const savingDisabled =
-    createPending ||
-    updatePending ||
-    (!isEditing && isPharmacist && !hasAssignedHospital);
+  }, [data]);
 
   return (
     <Dialog
       open={open}
       onOpenChange={() => {
         onClose();
-        form.reset({
-          ...inventoryDefaultValues,
-          hospital_id: isPharmacist ? assignedHospitalId : 0,
-        });
+        form.reset(inventoryDefaultValues);
       }}
     >
       <DialogContent className="max-h-[80vh] max-w-xl overflow-y-auto">
@@ -309,52 +276,6 @@ const InventoryDialog: FC<{
             onSubmit={form.handleSubmit(onSubmit)}
             className="space-y-3 overflow-y-auto p-1"
           >
-            {!isEditing && isSuperAdmin && (
-              <FormField
-                control={form.control}
-                name="hospital_id"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>
-                      Hospital <span className="text-red-500">*</span>
-                    </FormLabel>
-                    <FormControl>
-                      <Combobox
-                        isLoading={isHospitalsLoading}
-                        items={
-                          hospitalsData?.hospitals.map((hospital) => ({
-                            label: hospital.name,
-                            value: hospital.id?.toString() || "",
-                          })) || []
-                        }
-                        onChange={setHospitalSearch}
-                        placeholder="Select hospital"
-                        search={hospitalSearch}
-                        setValue={(value) => field.onChange(Number(value))}
-                        value={field.value > 0 ? field.value.toString() : ""}
-                      />
-                    </FormControl>
-                    <FormMessage>
-                      {errors["hospital_id"] && errors["hospital_id"][0]}
-                    </FormMessage>
-                  </FormItem>
-                )}
-              />
-            )}
-
-            {(isEditing || isPharmacist) && (
-              <div className="space-y-2">
-                <FormLabel>Hospital</FormLabel>
-                <Input value={hospitalName} disabled readOnly />
-                {!isEditing && isPharmacist && !hasAssignedHospital && (
-                  <p className="text-sm font-medium text-destructive">
-                    No hospital is assigned to your account. Contact a Super
-                    Admin before creating an inventory item.
-                  </p>
-                )}
-              </div>
-            )}
-
             {/* drug_name */}
             <FormField
               control={form.control}
@@ -451,14 +372,14 @@ const InventoryDialog: FC<{
 
             <div className="flex justify-end">
               <Button
-                disabled={savingDisabled}
+                disabled={createPending || updatePending}
                 type="submit"
                 className="mt-3 w-full max-w-40"
               >
                 {(createPending || updatePending) && (
                   <PiSpinnerGapBold className="animate-spin" />
                 )}
-                Save Batch
+                Save Inventory
               </Button>
             </div>
           </form>
@@ -698,10 +619,6 @@ const ShowDetails: FC<{
           <div>
             <span className="font-medium">Brand Name:</span>{" "}
             {showDetails?.brand_name}
-          </div>
-          <div>
-            <span className="font-medium">Hospital:</span>{" "}
-            {showDetails?.hospital?.name || "—"}
           </div>
           <div>
             <span className="font-medium">Available Quantity:</span>{" "}

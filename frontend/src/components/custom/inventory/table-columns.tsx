@@ -26,21 +26,16 @@ export const inventoryColumns: ColumnDef<Inventory>[] = [
     cell: ({ row }) => <span>{row.getValue("brand_name")}</span>,
   },
   {
-    accessorKey: "type",
-    header: "Type",
-    cell: ({ row }) => (
-      <span className="capitalize">{row.getValue("type")}</span>
-    ),
-  },
-  {
     accessorKey: "weight",
     header: "Weight",
     cell: ({ row }) => <span>{row.getValue("weight")}mg</span>,
   },
   {
-    accessorKey: "hospital.name",
-    header: "Hospital",
-    cell: ({ row }) => <span>{row.original.hospital?.name || "—"}</span>,
+    accessorKey: "type",
+    header: "Type",
+    cell: ({ row }) => (
+      <span className="capitalize">{row.getValue("type")}</span>
+    ),
   },
   {
     accessorKey: "available_quantity",
@@ -79,10 +74,7 @@ export const inventoryColumns: ColumnDef<Inventory>[] = [
           <DropdownMenuContent align="end">
             <DropdownMenuLabel>Actions</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <PermissionWrapper
-              permissions={[permissions.manageInventories]}
-              roles={["super_admin", "pharmacist"]}
-            >
+            <PermissionWrapper permissions={[permissions.manageInventories]}>
               <DropdownMenuItem
                 onClick={() => {
                   setSelectedInventory(row.original);

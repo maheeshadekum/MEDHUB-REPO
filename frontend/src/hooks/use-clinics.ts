@@ -1,7 +1,6 @@
 import type { Clinic } from "@/services/clinics";
 
 import { clinicsServices } from "@/services/clinics";
-import { hospitalsServices } from "@/services/hospitals";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 // Get clinics with pagination
@@ -9,7 +8,7 @@ export const useClinics = (data: {
   pageSize: number;
   currentPage: number;
   search?: string;
-}, enabled = true) =>
+}) =>
   useQuery({
     queryKey: ["clinics", data],
     queryFn: async () => {
@@ -26,7 +25,6 @@ export const useClinics = (data: {
         };
       }
     },
-    enabled,
     retry: false,
     refetchOnWindowFocus: false,
   });
@@ -43,45 +41,6 @@ export const useClinicById = (id: number) =>
         return null;
       }
     },
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-
-// Get clinics belonging to the selected or assigned hospital
-export const useClinicsByHospital = (hospitalId: number, enabled: boolean) =>
-  useQuery({
-    queryKey: ["clinics-by-hospital", hospitalId],
-    queryFn: () => clinicsServices.getClinicsByHospital(hospitalId),
-    enabled: enabled && hospitalId > 0,
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-
-// Get hospitals for the Super Admin clinic selector
-export const useClinicHospitals = (search: string, enabled: boolean) =>
-  useQuery({
-    queryKey: ["clinic-hospitals", search],
-    queryFn: () =>
-      hospitalsServices.getHospitals({
-        currentPage: 1,
-        pageSize: 100,
-        search,
-      }),
-    enabled,
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-
-// Get working doctors assigned to the selected hospital
-export const useAvailableClinicDoctors = (
-  hospitalId: number,
-  search: string,
-  enabled: boolean,
-) =>
-  useQuery({
-    queryKey: ["clinic-doctors", hospitalId, search],
-    queryFn: () => clinicsServices.getAvailableDoctors(hospitalId, search),
-    enabled: enabled && hospitalId > 0,
     retry: false,
     refetchOnWindowFocus: false,
   });

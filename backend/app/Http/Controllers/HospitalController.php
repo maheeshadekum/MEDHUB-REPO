@@ -233,10 +233,6 @@ class HospitalController extends Controller
      */
     public function manageHospital(Request $request)
     {
-        if ($request->user()->role?->name !== 'hospital_admin') {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
         // get hospital by requested user's hospitals relationship
         $hospital = $request->user()->hospitals()->first();
 
@@ -244,55 +240,8 @@ class HospitalController extends Controller
             return response()->json(['message' => 'Hospital not found for user'], 404);
         }
 
-        return $this->updateHospitalSettings($request, $hospital);
-    }
-
-    /**
-     * Update settings for an explicitly selected hospital.
-     */
-    public function updateHospitalSettings(Request $request, Hospital $hospital)
-    {
-        $user = $request->user();
-        $role = $user->role?->name;
-
-        if ($role === 'hospital_admin' && (int) $user->hospital_id !== (int) $hospital->id) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if (!in_array($role, ['super_admin', 'hospital_admin'], true)) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        $validated = $request->validate([
-            'name' => 'required|string|max:255|unique:hospitals,name,' . $hospital->id,
-            'address' => 'nullable|string|max:255',
-            'phone' => 'nullable|string|max:10',
-            'email' => 'required|email|unique:hospitals,email,' . $hospital->id,
-            'district' => 'nullable|string|max:100',
-            'location_url' => 'required|url',
-            'is_inventory_activated' => 'required|boolean',
-            'is_appointment_activated' => 'required|boolean',
-        ]);
-
-        $coordinates = $this->getCoordinatesFromGoogleMapsShortUrl($validated['location_url']);
-        if (!$coordinates) {
-            return response()->json(['message' => 'Invalid location URL'], 400);
-        }
-
-        $validated['location_lat'] = $coordinates['lat'];
-        $validated['location_lng'] = $coordinates['lng'];
-
-        DB::beginTransaction();
-
-        try {
-            $hospital->update($validated);
-            DB::commit();
-
-            return response()->json($hospital, 200);
-        } catch (Exception $e) {
-            DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
-        }
+        // call updateHospital method
+        return $this->updateHospital($request, $hospital, true);
     }
 
     /**

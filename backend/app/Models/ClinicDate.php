@@ -52,6 +52,6 @@ class ClinicDate extends Model
      */
     public function clinicTokens(): HasMany
     {
-        return $this->hasMany(ClinicToken::class, 'clinic_id');
+        return $this->hasMany(ClinicToken::class);
     }
 }

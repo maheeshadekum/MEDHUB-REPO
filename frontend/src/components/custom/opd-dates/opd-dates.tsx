@@ -7,7 +7,6 @@ import { opdDateColumns } from "@/components/custom/opd-dates/table-columns";
 import {
   Button,
   Calendar,
-  Combobox,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -31,7 +30,6 @@ import {
 } from "@/components/ui";
 import { permissions } from "@/constants/permissions";
 import { useAuth } from "@/hooks/use-auth";
-import { useHospitals } from "@/hooks/use-hospitals";
 import {
   useCreateOpdDate,
   useOpdDates,
@@ -107,6 +105,7 @@ export const OpdDates: FC = React.memo(() => {
         open={open}
         onClose={closeDialog}
         data={selectedOpdDate}
+        hospitalId={user?.hospital_id || null}
       />
 
       {/* opd date status dialog */}
@@ -139,10 +138,7 @@ export const OpdDates: FC = React.memo(() => {
             endPage: data?.endPage || 0,
           }}
         >
-          <PermissionWrapper
-            permissions={[permissions.manageHospitals]}
-            roles={["super_admin", "hospital_admin"]}
-          >
+          <PermissionWrapper permissions={[permissions.manageHospitals]}>
             <Button
               size={"sm"}
               variant={"outline"}
@@ -170,14 +166,8 @@ const OpdDateDialog: FC<{
   open: boolean;
   onClose: () => void;
   data?: OpdDate | null;
-}> = React.memo(({ open, onClose, data }) => {
-  const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
-  const isHospitalAdmin = user?.role === "hospital_admin";
-  const isEditing = Boolean(data);
-  const assignedHospitalId = user?.hospital_id || 0;
-  const hasAssignedHospital = assignedHospitalId > 0;
-  const [hospitalSearch, setHospitalSearch] = useState("");
+  hospitalId: number | null;
+}> = React.memo(({ open, onClose, data, hospitalId }) => {
   const [errors, setErrors] = useState<{ [key: string]: string[] | string }>(
     {},
   );
@@ -185,11 +175,6 @@ const OpdDateDialog: FC<{
     useCreateOpdDate();
   const { mutateAsync: updateOpdDate, isPending: updatePending } =
     useUpdateOpdDate();
-  const { data: hospitalsData, isLoading: isHospitalsLoading } = useHospitals({
-    currentPage: 1,
-    pageSize: 100,
-    search: hospitalSearch,
-  });
 
   const form = useForm<z.infer<typeof opdDateSchema>>({
     resolver: zodResolver(opdDateSchema),
@@ -204,11 +189,7 @@ const OpdDateDialog: FC<{
     const utcDateStringDate = moment(localMidnightDate).utc().format();
     values.date = new Date(utcDateStringDate);
     if (data) {
-      const updatedValues = {
-        ...values,
-        hospital_id: data.hospital_id,
-        id: data.id,
-      };
+      const updatedValues = { ...values, id: data.id };
       await updateOpdDate(updatedValues)
         .then(() => {
           toast.success("OPD date updated", {
@@ -250,39 +231,19 @@ const OpdDateDialog: FC<{
         ...data,
         status: data.status ?? "scheduled",
         date: data.date ? new Date(data.date) : new Date(),
-        hospital_id: data.hospital_id,
+        hospital_id: data.hospital_id || hospitalId || 0,
       });
     } else {
-      form.reset({
-        ...opdDateDefaultValues,
-        hospital_id: isHospitalAdmin ? assignedHospitalId : 0,
-      });
+      form.reset({ ...opdDateDefaultValues, hospital_id: hospitalId || 0 });
     }
-    setHospitalSearch("");
-  }, [assignedHospitalId, data, form, isHospitalAdmin]);
-
-  const hospitalName = isEditing
-    ? data?.hospital?.name ||
-      hospitalsData?.hospitals.find(
-        (hospital) => hospital.id === data?.hospital_id,
-      )?.name ||
-      `Hospital ${data?.hospital_id}`
-    : user?.hospital || "Assigned hospital";
-
-  const savingDisabled =
-    createPending ||
-    updatePending ||
-    (!isEditing && isHospitalAdmin && !hasAssignedHospital);
+  }, [data, form, hospitalId]);
 
   return (
     <Dialog
       open={open}
       onOpenChange={() => {
         onClose();
-        form.reset({
-          ...opdDateDefaultValues,
-          hospital_id: isHospitalAdmin ? assignedHospitalId : 0,
-        });
+        form.reset(opdDateDefaultValues);
       }}
     >
       <DialogContent className="max-h-[80vh] max-w-xl overflow-y-auto">
@@ -301,50 +262,6 @@ const OpdDateDialog: FC<{
             onSubmit={form.handleSubmit(onSubmit)}
             className="space-y-3 overflow-y-auto p-1"
           >
-            {!isEditing && isSuperAdmin && (
-              <FormField
-                control={form.control}
-                name="hospital_id"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Hospital</FormLabel>
-                    <FormControl>
-                      <Combobox
-                        isLoading={isHospitalsLoading}
-                        items={
-                          hospitalsData?.hospitals.map((hospital) => ({
-                            label: hospital.name,
-                            value: hospital.id?.toString() || "",
-                          })) || []
-                        }
-                        onChange={setHospitalSearch}
-                        placeholder="Hospital"
-                        search={hospitalSearch}
-                        setValue={(value) => field.onChange(Number(value))}
-                        value={field.value > 0 ? field.value.toString() : ""}
-                      />
-                    </FormControl>
-                    <FormMessage>
-                      {errors["hospital_id"] && errors["hospital_id"][0]}
-                    </FormMessage>
-                  </FormItem>
-                )}
-              />
-            )}
-
-            {(isEditing || isHospitalAdmin) && (
-              <div className="space-y-2">
-                <FormLabel>Hospital</FormLabel>
-                <Input value={hospitalName} disabled readOnly />
-                {!isEditing && isHospitalAdmin && !hasAssignedHospital && (
-                  <p className="text-sm font-medium text-destructive">
-                    No hospital is assigned to your account. Contact a Super
-                    Admin before creating an OPD date.
-                  </p>
-                )}
-              </div>
-            )}
-
             {/* date */}
             <FormField
               control={form.control}
@@ -462,7 +379,7 @@ const OpdDateDialog: FC<{
 
             <div className="flex justify-end">
               <Button
-                disabled={savingDisabled}
+                disabled={createPending || updatePending}
                 type="submit"
                 className="mt-3 w-full max-w-40"
               >

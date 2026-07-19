@@ -151,7 +151,6 @@ export function ClinicDateTable<TData, TValue>({
               {clinicsData.map((clinic) => (
                 <SelectItem key={clinic.id} value={clinic.id?.toString() || ""}>
                   {clinic.name}
-                  {clinic.hospital?.name ? ` — ${clinic.hospital.name}` : ""}
                 </SelectItem>
               ))}
             </SelectContent>
