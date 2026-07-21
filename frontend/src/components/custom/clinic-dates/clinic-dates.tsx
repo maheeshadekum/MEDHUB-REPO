@@ -1,16 +1,15 @@
-import type { ClinicDate } from "@/services/clinic-dates";
-import type { Clinic } from "@/services/clinics";
-import type { FC } from "react";
+import type { ClinicDate, ClinicDateStatus } from "@/services/clinic-dates";
 import type { z } from "zod";
 
 import { ClinicDateTable } from "@/components/custom/clinic-dates/table";
-import { clinicDateColumns } from "@/components/custom/clinic-dates/table-columns";
+import { clinicDateColumns, formatClinicDate } from "@/components/custom/clinic-dates/table-columns";
 import {
   Button,
-  Calendar,
+  Combobox,
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   Form,
@@ -20,9 +19,6 @@ import {
   FormLabel,
   FormMessage,
   Input,
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
   Select,
   SelectContent,
   SelectItem,
@@ -30,509 +26,361 @@ import {
   SelectValue,
 } from "@/components/ui";
 import { permissions } from "@/constants/permissions";
+import { useAuth } from "@/hooks/use-auth";
 import {
+  useClinicDateClinicOptions,
+  useClinicDateDebouncedValue,
+  useClinicDateHospitalOption,
+  useClinicDateHospitalOptions,
+} from "@/hooks/use-clinic-date-options";
+import {
+  useClinicDateById,
   useClinicDates,
   useCreateClinicDate,
   useUpdateClinicDate,
   useUpdateClinicDateStatus,
 } from "@/hooks/use-clinic-dates";
-import { useClinics } from "@/hooks/use-clinics";
-import { PermissionWrapper } from "@/providers/permission-wrapper";
-import { cn } from "@/utils";
-import { clinicDateSchema } from "@/validations/clinic-dates";
+import { clinicDateSchema, clinicDateStatusSchema } from "@/validations/clinic-dates";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { addDays, format } from "date-fns";
-import { CalendarIcon, Check } from "lucide-react";
-import moment from "moment";
-import React, { useEffect, useState } from "react";
+import { Plus } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
-import { BiError } from "react-icons/bi";
 import { PiSpinnerGapBold } from "react-icons/pi";
 import { toast } from "sonner";
 
-const clinicDateDefaultValues: ClinicDate = {
-  clinic_id: 0,
-  date: new Date(),
-  start_time: "",
-  end_time: "",
-  status: "scheduled",
+type FormValues = z.infer<typeof clinicDateSchema>;
+type FieldErrors = Partial<Record<keyof FormValues | "status" | "message", string>>;
+const MANAGER_ROLES = ["super_admin", "hospital_admin"];
+const FILTER_ROLES = ["super_admin", "hospital_admin", "receptionist"];
+
+const getLocalToday = () => {
+  const today = new Date();
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 };
 
-export const ClinicDates: FC = React.memo(() => {
-  const [open, setOpen] = useState<boolean>(false);
-  const [showDetails, setShowDetails] = useState<boolean>(false);
-  const [showStatusDialog, setShowStatusDialog] = useState<boolean>(false);
+const defaults: FormValues = { clinic_id: 0, date: getLocalToday(), start_time: "", end_time: "" };
+
+const getApiErrors = (error: unknown): FieldErrors => {
+  if (!error || typeof error !== "object" || !("response" in error)) {
+    return { message: "Unable to save the Clinic Date. Check your connection and try again." };
+  }
+  const response = (error as { response?: { status?: number; data?: { message?: string; errors?: Record<string, string[]> } } }).response;
+  const fieldErrors = response?.data?.errors;
+  const mapped: FieldErrors = {};
+  if (fieldErrors) {
+    (["clinic_id", "date", "start_time", "end_time", "status"] as const).forEach((field) => {
+      if (fieldErrors[field]?.[0]) mapped[field] = fieldErrors[field][0];
+    });
+    if (fieldErrors.schedule?.[0]) mapped.message = fieldErrors.schedule[0];
+  }
+  if (Object.keys(mapped).length) return mapped;
+  if ([403, 404, 422].includes(response?.status ?? 0) && response?.data?.message) {
+    return { message: response.data.message };
+  }
+  return { message: "Unable to save the Clinic Date. Please try again." };
+};
+
+export const ClinicDates = React.memo(() => {
+  const { user } = useAuth();
+  const role = user?.role ?? "";
+  const isSuperAdmin = role === "super_admin";
+  const canManageClinicDates = Boolean(
+    user?.permissions?.includes(permissions.manageHospitals) && MANAGER_ROLES.includes(role),
+  );
+  const hasManagementContext = isSuperAdmin || Boolean(user?.hospital_id);
+  const canUseManagement = canManageClinicDates && hasManagementContext;
+  const showClinicFilter = FILTER_ROLES.includes(role);
+
+  const [dialog, setDialog] = useState<"form" | "details" | "status" | null>(null);
+  const [selected, setSelected] = useState<ClinicDate | null>(null);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("default");
-  const [clinicId, setClinicId] = useState<number | null>(0);
-  const [pagination, setPagination] = useState({
-    currentPage: 1,
-    pageSize: 20,
-  });
-  const { data } = useClinicDates({
+  const debouncedSearch = useClinicDateDebouncedValue(search);
+  const [status, setStatus] = useState<ClinicDateStatus | undefined>();
+  const [clinicId, setClinicId] = useState<number | undefined>();
+  const [filterHospitalId, setFilterHospitalId] = useState<number | undefined>();
+  const [hospitalSearch, setHospitalSearch] = useState("");
+  const debouncedHospitalSearch = useClinicDateDebouncedValue(hospitalSearch);
+  const [pagination, setPagination] = useState({ currentPage: 1, pageSize: 20 });
+
+  const listQuery = useClinicDates({
     currentPage: pagination.currentPage,
     pageSize: pagination.pageSize,
-    search,
-    clinic_id: clinicId === 0 ? undefined : clinicId || undefined,
-    status: statusFilter === "default" ? undefined : statusFilter || undefined,
-  });
-  const [selectedClinicDate, setSelectedClinicDate] =
-    useState<ClinicDate | null>(null);
-
-  // Fetch clinics for dropdown
-  const { data: clinicsData } = useClinics({
-    currentPage: 1,
-    pageSize: 100,
+    search: debouncedSearch || undefined,
+    clinic_id: clinicId,
+    status,
   });
 
-  // clear selected clinic date when dialog closes
-  const closeDialog = () => {
-    setSelectedClinicDate(null);
-    setOpen(false);
-    setShowDetails(false);
-    setShowStatusDialog(false);
-  };
-
-  // reset current page when search or status filter is changed
-  useEffect(() => {
-    setPagination((prev) => ({
-      ...prev,
-      currentPage: 1,
+  const hospitalOptionsQuery = useClinicDateHospitalOptions(
+    debouncedHospitalSearch,
+    isSuperAdmin && showClinicFilter,
+  );
+  const selectedHospitalQuery = useClinicDateHospitalOption(
+    filterHospitalId ?? 0,
+    isSuperAdmin && Boolean(filterHospitalId),
+  );
+  const optionHospitalId = isSuperAdmin ? (filterHospitalId ?? 0) : (user?.hospital_id ?? 0);
+  const clinicOptionsQuery = useClinicDateClinicOptions(
+    optionHospitalId,
+    showClinicFilter && optionHospitalId > 0,
+  );
+  const hospitalOptions = useMemo(() => {
+    const values = [...(hospitalOptionsQuery.data ?? [])];
+    const selectedHospital = selectedHospitalQuery.data;
+    if (selectedHospital && !values.some(({ id }) => id === selectedHospital.id)) values.unshift(selectedHospital);
+    return values.map((hospital) => ({
+      value: String(hospital.id),
+      label: [hospital.name, hospital.district, hospital.identifier].filter(Boolean).join(" — "),
     }));
-  }, [search, statusFilter]);
+  }, [hospitalOptionsQuery.data, selectedHospitalQuery.data]);
+  const clinicOptions = useMemo(
+    () => (clinicOptionsQuery.data ?? []).map((clinic) => ({
+      value: String(clinic.id),
+      label: [clinic.name, clinic.location, clinic.doctor?.name].filter(Boolean).join(" — "),
+    })),
+    [clinicOptionsQuery.data],
+  );
+
+  useEffect(() => {
+    setPagination((current) => ({ ...current, currentPage: 1 }));
+  }, [debouncedSearch]);
+  useEffect(() => {
+    const endPage = listQuery.data?.endPage ?? 0;
+    if (!listQuery.isFetching && pagination.currentPage > Math.max(endPage, 1)) {
+      setPagination((current) => ({ ...current, currentPage: Math.max(endPage, 1) }));
+    }
+  }, [listQuery.data?.endPage, listQuery.isFetching, pagination.currentPage]);
+
+  const changeHospitalFilter = (value?: number) => {
+    setFilterHospitalId(value);
+    setClinicId(undefined);
+    setPagination((current) => ({ ...current, currentPage: 1 }));
+  };
+  const changeClinicFilter = (value?: number) => {
+    setClinicId(value);
+    setPagination((current) => ({ ...current, currentPage: 1 }));
+  };
+  const resetFilters = () => {
+    setSearch("");
+    setStatus(undefined);
+    setClinicId(undefined);
+    setFilterHospitalId(undefined);
+    setHospitalSearch("");
+    setPagination((current) => ({ ...current, currentPage: 1 }));
+  };
+  const closeDialog = () => {
+    setDialog(null);
+    setSelected(null);
+  };
+  const openDialog = (kind: "details" | "status" | "form", value?: ClinicDate) => {
+    setSelected(value ?? null);
+    setDialog(kind);
+  };
+  const data = listQuery.data;
+  const isFiltered = Boolean(search || status || clinicId || (isSuperAdmin && filterHospitalId));
 
   return (
     <div className="flex w-full flex-col">
-      <h2 className="text-lg font-semibold">Clinic Dates</h2>
-      <p className="text-sm text-gray-500">
-        Manage clinic schedules and appointments
-      </p>
-
-      {/* clinic date dialog */}
-      <ClinicDateDialog
-        open={open}
-        onClose={closeDialog}
-        data={selectedClinicDate}
-        clinicsData={clinicsData?.clinics || []}
-      />
-
-      {/* clinic date status dialog */}
-      <ClinicDateStatusDialog
-        open={showStatusDialog}
-        onClose={closeDialog}
-        data={selectedClinicDate}
-      />
-
-      {/* clinic dates list */}
-      <div className="mt-4 flex w-full justify-center overflow-hidden">
-        <ClinicDateTable
-          columns={clinicDateColumns}
-          data={data?.clinicDates || []}
-          clinicsData={clinicsData?.clinics || []}
-          search={search}
-          setSearch={setSearch}
-          statusFilter={statusFilter}
-          setStatusFilter={setStatusFilter}
-          clinicId={clinicId}
-          setClinicId={setClinicId}
-          setSelectedClinicDate={setSelectedClinicDate}
-          setOpen={setOpen}
-          setShowDetails={setShowDetails}
-          setShowStatusDialog={setShowStatusDialog}
-          setPagination={setPagination}
-          pagination={{
-            currentPage: pagination.currentPage,
-            pageSize: pagination.pageSize,
-            from: data?.from || 0,
-            to: data?.to || 0,
-            total: data?.total || 0,
-            endPage: data?.endPage || 0,
-          }}
-        >
-          <PermissionWrapper permissions={[permissions.manageHospitals]}>
-            <Button
-              size={"sm"}
-              variant={"outline"}
-              className="w-32"
-              onClick={() => setOpen(true)}
-            >
-              Add New
-            </Button>
-          </PermissionWrapper>
-        </ClinicDateTable>
+      <div>
+        <h2 className="text-lg font-semibold">Clinic Dates</h2>
+        <p className="text-sm text-muted-foreground">View and manage Clinic schedules.</p>
+        {canManageClinicDates && !hasManagementContext && (
+          <p role="alert" className="mt-2 text-sm font-medium text-destructive">
+            A hospital assignment is required to manage Clinic Dates.
+          </p>
+        )}
       </div>
-
-      {/* details dialog */}
-      {showDetails && selectedClinicDate && (
-        <ShowDetails
-          showDetails={selectedClinicDate}
-          setShowDetails={setShowDetails}
-        />
+      {dialog === "form" && canUseManagement && (
+        <ClinicDateDialog open clinicDate={selected} onClose={closeDialog} />
       )}
+      {dialog === "status" && selected && canUseManagement && (
+        <StatusDialog open clinicDate={selected} onClose={closeDialog} />
+      )}
+      {dialog === "details" && selected && (
+        <DetailsDialog open clinicDate={selected} onClose={closeDialog} />
+      )}
+      <ClinicDateTable
+        columns={clinicDateColumns}
+        data={data?.clinicDates ?? []}
+        search={search}
+        setSearch={setSearch}
+        status={status}
+        setStatus={(value) => { setStatus(value as ClinicDateStatus | undefined); setPagination((current) => ({ ...current, currentPage: 1 })); }}
+        clinicId={clinicId}
+        setClinicId={changeClinicFilter}
+        clinicOptions={clinicOptions}
+        showClinicFilter={showClinicFilter}
+        hospitalId={filterHospitalId}
+        setHospitalId={isSuperAdmin && showClinicFilter ? changeHospitalFilter : undefined}
+        hospitalOptions={hospitalOptions}
+        hospitalSearch={hospitalSearch}
+        setHospitalSearch={isSuperAdmin && showClinicFilter ? setHospitalSearch : undefined}
+        hospitalOptionsLoading={hospitalOptionsQuery.isPending}
+        canManageClinicDates={canUseManagement}
+        hideFilters={role === "pharmacist"}
+        viewDetails={(value) => openDialog("details", value)}
+        editClinicDate={(value) => openDialog("form", value)}
+        updateStatus={(value) => openDialog("status", value)}
+        isPending={listQuery.isPending && !data}
+        isFetching={listQuery.isFetching}
+        isError={listQuery.isError}
+        isFiltered={isFiltered}
+        refetch={() => void listQuery.refetch()}
+        resetFilters={resetFilters}
+        setPagination={setPagination}
+        pagination={{ ...pagination, from: data?.from ?? 0, to: data?.to ?? 0, total: data?.total ?? 0, endPage: data?.endPage ?? 0 }}
+      >
+        {canManageClinicDates && (
+          <Button size="sm" disabled={!hasManagementContext} onClick={() => openDialog("form")}>
+            <Plus className="mr-2 h-4 w-4" />Schedule Clinic Date
+          </Button>
+        )}
+      </ClinicDateTable>
     </div>
   );
 });
 
-const ClinicDateDialog: FC<{
-  open: boolean;
-  onClose: () => void;
-  data?: ClinicDate | null;
-  clinicsData: Clinic[];
-}> = React.memo(({ open, onClose, data, clinicsData }) => {
-  const [errors, setErrors] = useState<{ [key: string]: string[] | string }>(
-    {},
-  );
-  const { mutateAsync: createClinicDate, isPending: createPending } =
-    useCreateClinicDate();
-  const { mutateAsync: updateClinicDate, isPending: updatePending } =
-    useUpdateClinicDate();
+const ClinicDateDialog = ({ open, clinicDate, onClose }: { open: boolean; clinicDate: ClinicDate | null; onClose: () => void }) => {
+  const { user } = useAuth();
+  const isEdit = Boolean(clinicDate);
+  const isSuperAdmin = user?.role === "super_admin";
+  const [hospitalId, setHospitalId] = useState<number>(clinicDate?.clinic?.hospital_id ?? user?.hospital_id ?? 0);
+  const [hospitalSearch, setHospitalSearch] = useState("");
+  const [serverErrors, setServerErrors] = useState<FieldErrors>({});
+  const debouncedHospitalSearch = useClinicDateDebouncedValue(hospitalSearch);
+  const hospitalsQuery = useClinicDateHospitalOptions(debouncedHospitalSearch, isSuperAdmin && !isEdit);
+  const hospitalQuery = useClinicDateHospitalOption(hospitalId, hospitalId > 0);
+  const clinicsQuery = useClinicDateClinicOptions(hospitalId, hospitalId > 0 && !isEdit);
+  const createMutation = useCreateClinicDate();
+  const updateMutation = useUpdateClinicDate();
+  const pending = createMutation.isPending || updateMutation.isPending;
+  const form = useForm<FormValues>({ resolver: zodResolver(clinicDateSchema), defaultValues: defaults });
 
-  const form = useForm<z.infer<typeof clinicDateSchema>>({
-    resolver: zodResolver(clinicDateSchema),
-    defaultValues: clinicDateDefaultValues,
-  });
+  useEffect(() => {
+    setServerErrors({});
+    setHospitalId(clinicDate?.clinic?.hospital_id ?? user?.hospital_id ?? 0);
+    form.reset(clinicDate ? {
+      clinic_id: clinicDate.clinic_id,
+      date: clinicDate.date.slice(0, 10),
+      start_time: clinicDate.start_time.slice(0, 5),
+      end_time: clinicDate.end_time.slice(0, 5),
+    } : defaults);
+  }, [clinicDate, form, open, user?.hospital_id]);
 
-  // form submit handler
-  const onSubmit = async (values: z.infer<typeof clinicDateSchema>) => {
-    setErrors({});
-    // standardize date format
-    const localMidnightDate = moment(values.date).local().endOf("day");
-    const utcDateStringDate = moment(localMidnightDate).utc().format();
-    values.date = new Date(utcDateStringDate);
-    if (data) {
-      const updatedValues = {
-        ...values,
-        id: data.id,
-      };
-      await updateClinicDate(updatedValues)
-        .then(() => {
-          toast.success("Clinic date updated", {
-            description: new Date().toLocaleString(),
-          });
-          form.reset();
-          onClose();
-        })
-        .catch((error) => {
-          setErrors(
-            error?.response?.data?.errors || {
-              message: error?.response?.data?.message || "Something went wrong",
-            },
-          );
-        });
-    } else {
-      await createClinicDate(values)
-        .then(() => {
-          toast.success("Clinic date created", {
-            description: new Date().toLocaleString(),
-          });
-          form.reset();
-          onClose();
-        })
-        .catch((error) => {
-          setErrors(
-            error?.response?.data?.errors || {
-              message: error?.response?.data?.message || "Something went wrong",
-            },
-          );
-        });
+  const hospitals = useMemo(() => {
+    const options = [...(hospitalsQuery.data ?? [])];
+    if (hospitalQuery.data && !options.some(({ id }) => id === hospitalQuery.data?.id)) options.unshift(hospitalQuery.data);
+    return options.map((hospital) => ({ value: String(hospital.id), label: [hospital.name, hospital.district, hospital.identifier].filter(Boolean).join(" — ") }));
+  }, [hospitalQuery.data, hospitalsQuery.data]);
+  const clinics = clinicsQuery.data ?? [];
+  const changeHospital = (value: string) => {
+    const id = value ? Number(value) : 0;
+    setHospitalId(id);
+    form.setValue("clinic_id", 0, { shouldValidate: false });
+    form.clearErrors("clinic_id");
+    setServerErrors((current) => ({ ...current, clinic_id: undefined, message: undefined }));
+  };
+  const submit = async (values: FormValues) => {
+    setServerErrors({});
+    try {
+      if (isEdit && clinicDate) await updateMutation.mutateAsync({ id: clinicDate.id, ...values });
+      else await createMutation.mutateAsync(values);
+      toast.success(isEdit ? "Clinic Date schedule updated" : "Clinic Date scheduled");
+      form.reset(defaults);
+      onClose();
+    } catch (error) {
+      setServerErrors(getApiErrors(error));
     }
   };
 
-  // set form values if data is available
-  useEffect(() => {
-    if (data) {
-      form.reset({
-        ...data,
-        status: data.status ?? "scheduled",
-        date: data.date ? new Date(data.date) : new Date(),
-      });
-    } else {
-      form.reset(clinicDateDefaultValues);
-    }
-  }, [data, form]);
-
   return (
-    <Dialog
-      open={open}
-      onOpenChange={() => {
-        onClose();
-        form.reset(clinicDateDefaultValues);
-      }}
-    >
-      <DialogContent className="max-h-[80vh] max-w-xl overflow-y-auto">
+    <Dialog open={open} onOpenChange={(next) => !next && !pending && onClose()}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>
-            {data ? "Edit Clinic Date" : "Create Clinic Date"}
-          </DialogTitle>
-          <DialogDescription>
-            {data
-              ? "Edit the details of the clinic date."
-              : "Fill in the details to create a new clinic date."}
-          </DialogDescription>
+          <DialogTitle>{isEdit ? "Edit Clinic Date" : "Schedule Clinic Date"}</DialogTitle>
+          <DialogDescription>{isEdit ? "Update the schedule. Hospital and Clinic ownership cannot be changed." : "Choose the Hospital and Clinic, then enter the schedule."}</DialogDescription>
         </DialogHeader>
         <Form {...form}>
-          <form
-            onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-3 overflow-y-auto p-1"
-          >
-            {/* clinic_id */}
-            <FormField
-              control={form.control}
-              name="clinic_id"
-              render={({ field }) => (
-                <FormItem className="w-full">
-                  <FormLabel>Clinic</FormLabel>
-                  <Select
-                    onValueChange={(value) => field.onChange(Number(value))}
-                    value={
-                      field.value === 0 ? undefined : field.value?.toString()
-                    }
-                  >
-                    <FormControl className="w-full">
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select a clinic" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {clinicsData?.map((clinic) => (
-                        <SelectItem
-                          key={clinic.id}
-                          value={clinic.id?.toString() || ""}
-                        >
-                          {clinic.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
+          <form onSubmit={form.handleSubmit(submit)} className="space-y-4">
+            <FormItem>
+              <FormLabel>Hospital <span aria-hidden="true">*</span></FormLabel>
+              {isSuperAdmin && !isEdit ? (
+                <Combobox value={hospitalId ? String(hospitalId) : ""} items={hospitals} placeholder="Hospital" isLoading={hospitalsQuery.isPending} search={hospitalSearch} onChange={setHospitalSearch} setValue={changeHospital} />
+              ) : (
+                <Input readOnly value={clinicDate?.clinic?.hospital?.name ?? hospitalQuery.data?.name ?? "Assigned Hospital"} aria-label="Hospital" />
+              )}
+            </FormItem>
+            <FormField control={form.control} name="clinic_id" render={({ field }) => (
+              <FormItem>
+                <FormLabel>Clinic <span aria-hidden="true">*</span></FormLabel>
+                {isEdit ? (
+                  <Input readOnly value={clinicDate?.clinic?.name ?? "Clinic"} aria-label="Clinic" />
+                ) : (
+                  <Select value={field.value > 0 ? String(field.value) : undefined} disabled={!hospitalId || clinicsQuery.isPending} onValueChange={(value) => { field.onChange(Number(value)); setServerErrors((current) => ({ ...current, clinic_id: undefined, message: undefined })); }}>
+                    <FormControl><SelectTrigger><SelectValue placeholder={hospitalId ? "Select a Clinic" : "Select a Hospital first"} /></SelectTrigger></FormControl>
+                    <SelectContent>{clinics.map((clinic) => <SelectItem key={clinic.id} value={String(clinic.id)}>{[clinic.name, clinic.location, clinic.doctor?.name].filter(Boolean).join(" — ")}</SelectItem>)}</SelectContent>
                   </Select>
-                  <FormMessage>
-                    {errors["clinic_id"] && errors["clinic_id"][0]}
-                  </FormMessage>
-                </FormItem>
-              )}
-            />
-
-            {/* date */}
-            <FormField
-              control={form.control}
-              name="date"
-              render={({ field }) => (
-                <FormItem className="flex flex-col">
-                  <FormLabel>Date</FormLabel>
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <FormControl>
-                        <Button
-                          variant={"outline"}
-                          className={cn(
-                            "w-full pl-3 text-left font-normal",
-                            !field.value && "text-muted-foreground",
-                          )}
-                        >
-                          {field.value ? (
-                            format(field.value, "PPP")
-                          ) : (
-                            <span>Pick a date</span>
-                          )}
-                          <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
-                        </Button>
-                      </FormControl>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-auto p-0" align="start">
-                      <Calendar
-                        mode="single"
-                        startMonth={field.value || new Date()}
-                        selected={field.value}
-                        onSelect={field.onChange}
-                        disabled={(date) =>
-                          date < addDays(new Date(), -1) ||
-                          // after 7 days
-                          date > addDays(new Date(), 7)
-                        }
-                        captionLayout="label"
-                      />
-                    </PopoverContent>
-                  </Popover>
-                  <FormMessage>
-                    {errors["date"] && errors["date"][0]}
-                  </FormMessage>
-                </FormItem>
-              )}
-            />
-
-            {/* start_time */}
-            <FormField
-              control={form.control}
-              name="start_time"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Start Time</FormLabel>
-                  <FormControl>
-                    <Input type="time" placeholder="HH:MM" {...field} />
-                  </FormControl>
-                  <FormMessage>
-                    {errors["start_time"] && errors["start_time"][0]}
-                  </FormMessage>
-                </FormItem>
-              )}
-            />
-
-            {/* end_time */}
-            <FormField
-              control={form.control}
-              name="end_time"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>End Time</FormLabel>
-                  <FormControl>
-                    <Input type="time" placeholder="HH:MM" {...field} />
-                  </FormControl>
-                  <FormMessage>
-                    {errors["end_time"] && errors["end_time"][0]}
-                  </FormMessage>
-                </FormItem>
-              )}
-            />
-
-            {/* status */}
-            <FormField
-              control={form.control}
-              name="status"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Status</FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <FormControl className="w-full">
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select status" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      <SelectItem value="scheduled">Scheduled</SelectItem>
-                      <SelectItem value="completed">Completed</SelectItem>
-                      <SelectItem value="cancelled">Cancelled</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <FormMessage>
-                    {errors["status"] && errors["status"][0]}
-                  </FormMessage>
-                </FormItem>
-              )}
-            />
-
-            {/*common error message */}
-            {errors?.message && (
-              <div className="flex justify-center">
-                <FormMessage className="mt-3 flex w-full max-w-xl items-center justify-center rounded-sm bg-red-500 py-2 text-center text-white">
-                  <BiError className="h-5 w-5" /> {errors?.message}
-                </FormMessage>
-              </div>
-            )}
-
-            <div className="flex justify-end">
-              <Button
-                disabled={createPending || updatePending}
-                type="submit"
-                className="mt-3 w-full max-w-40"
-              >
-                {(createPending || updatePending) && (
-                  <PiSpinnerGapBold className="animate-spin" />
                 )}
-                Save Clinic Date
-              </Button>
+                <FormMessage>{serverErrors.clinic_id}</FormMessage>
+              </FormItem>
+            )} />
+            <FormField control={form.control} name="date" render={({ field }) => <FormItem><FormLabel>Date <span aria-hidden="true">*</span></FormLabel><FormControl><Input type="date" min={getLocalToday()} {...field} onChange={(event) => { field.onChange(event); setServerErrors((current) => ({ ...current, date: undefined, message: undefined })); }} /></FormControl><FormMessage>{serverErrors.date}</FormMessage></FormItem>} />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField control={form.control} name="start_time" render={({ field }) => <FormItem><FormLabel>Start Time <span aria-hidden="true">*</span></FormLabel><FormControl><Input type="time" {...field} onChange={(event) => { field.onChange(event); setServerErrors((current) => ({ ...current, start_time: undefined, message: undefined })); }} /></FormControl><FormMessage>{serverErrors.start_time}</FormMessage></FormItem>} />
+              <FormField control={form.control} name="end_time" render={({ field }) => <FormItem><FormLabel>End Time <span aria-hidden="true">*</span></FormLabel><FormControl><Input type="time" {...field} onChange={(event) => { field.onChange(event); setServerErrors((current) => ({ ...current, end_time: undefined, message: undefined })); }} /></FormControl><FormMessage>{serverErrors.end_time}</FormMessage></FormItem>} />
             </div>
+            {serverErrors.message && <p role="alert" className="text-sm font-medium text-destructive">{serverErrors.message}</p>}
+            <DialogFooter>
+              <Button type="button" variant="outline" disabled={pending} onClick={onClose}>Cancel</Button>
+              <Button type="submit" disabled={pending || !hospitalId}>{pending && <PiSpinnerGapBold className="mr-2 h-4 w-4 animate-spin" />}{isEdit ? "Save Schedule Changes" : "Schedule Clinic Date"}</Button>
+            </DialogFooter>
           </form>
         </Form>
       </DialogContent>
     </Dialog>
   );
-});
+};
 
-const ClinicDateStatusDialog: FC<{
-  open: boolean;
-  data: ClinicDate | null;
-  onClose: () => void;
-}> = React.memo(({ open, data, onClose }) => {
-  const { mutateAsync: updateStatus, isPending: isUpdating } =
-    useUpdateClinicDateStatus();
-
-  const handleStatusChange = async (status: string) => {
-    if (data && data.id) {
-      await updateStatus({ id: data.id, status })
-        .then(() => {
-          toast.success(`OPD date status updated to ${status}`, {
-            description: new Date().toLocaleString(),
-          });
-          onClose();
-        })
-        .catch((error) => {
-          toast.error(
-            `Failed to update status: ${error?.response?.data?.message || "Something went wrong"}`,
-          );
-        });
+const StatusDialog = ({ open, clinicDate, onClose }: { open: boolean; clinicDate: ClinicDate; onClose: () => void }) => {
+  const [status, setStatus] = useState<ClinicDateStatus>(clinicDate.status);
+  const [error, setError] = useState("");
+  const mutation = useUpdateClinicDateStatus();
+  const submit = async () => {
+    const parsed = clinicDateStatusSchema.safeParse({ status });
+    if (!parsed.success) return setError("Select a valid status.");
+    setError("");
+    try {
+      await mutation.mutateAsync({ id: clinicDate.id, status });
+      toast.success("Clinic Date status updated");
+      onClose();
+    } catch (apiError) {
+      setError(getApiErrors(apiError).status ?? getApiErrors(apiError).message ?? "Unable to update status.");
     }
   };
-
   return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Update Clinic Date Status</DialogTitle>
-          <DialogDescription>
-            Select a new status for the Clinic date.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex gap-3">
-          {["scheduled", "completed", "cancelled"].map((status) => (
-            <Button
-              key={status}
-              variant={data?.status === status ? "default" : "outline"}
-              onClick={() => handleStatusChange(status)}
-              disabled={isUpdating}
-              className="capitalize"
-            >
-              {data?.status === status && <Check className="mr-2 h-4 w-4" />}{" "}
-              {status}
-            </Button>
-          ))}
-        </div>
+    <Dialog open={open} onOpenChange={(next) => !next && !mutation.isPending && onClose()}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader><DialogTitle>Update Clinic Date Status</DialogTitle><DialogDescription>Review the schedule context before changing its status.</DialogDescription></DialogHeader>
+        <dl className="grid gap-2 text-sm sm:grid-cols-[auto_1fr]"><dt className="font-medium">Clinic</dt><dd>{clinicDate.clinic?.name ?? "N/A"}</dd><dt className="font-medium">Hospital</dt><dd>{clinicDate.clinic?.hospital?.name ?? "N/A"}</dd><dt className="font-medium">Date</dt><dd>{formatClinicDate(clinicDate.date)}</dd><dt className="font-medium">Current Status</dt><dd className="capitalize">{clinicDate.status}</dd></dl>
+        <div><label className="mb-2 block text-sm font-medium" htmlFor="clinic-date-status">New Status</label><Select value={status} onValueChange={(value) => { setStatus(value as ClinicDateStatus); setError(""); }}><SelectTrigger id="clinic-date-status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="scheduled">Scheduled</SelectItem><SelectItem value="completed">Completed</SelectItem><SelectItem value="cancelled">Cancelled</SelectItem></SelectContent></Select></div>
+        {status === "cancelled" && <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">Cancelling this Clinic Date retains the schedule, issued tokens and related clinical records. It does not delete historical information.</p>}
+        {error && <p role="alert" className="text-sm font-medium text-destructive">{error}</p>}
+        <DialogFooter><Button type="button" variant="outline" disabled={mutation.isPending} onClick={onClose}>Keep Current Status</Button><Button type="button" disabled={mutation.isPending || status === clinicDate.status} onClick={submit}>{mutation.isPending && <PiSpinnerGapBold className="mr-2 h-4 w-4 animate-spin" />}Confirm Status Update</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );
-});
+};
 
-const ShowDetails: FC<{
-  showDetails: ClinicDate | null;
-  setShowDetails: (show: boolean) => void;
-}> = React.memo(({ showDetails, setShowDetails }) => {
+const DetailsDialog = ({ open, clinicDate, onClose }: { open: boolean; clinicDate: ClinicDate; onClose: () => void }) => {
+  const query = useClinicDateById(clinicDate.id, open);
+  const data = query.data ?? clinicDate;
   return (
-    <Dialog open={!!showDetails} onOpenChange={() => setShowDetails(false)}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Clinic Date Details</DialogTitle>
-          <DialogDescription className="sr-only">
-            Here are the details of the clinic date you selected.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-0.5 text-sm">
-          <div>
-            <span className="font-medium">Date:</span>{" "}
-            {showDetails?.date &&
-              new Date(showDetails.date).toLocaleDateString()}
-          </div>
-          <div>
-            <span className="font-medium">Start Time:</span>{" "}
-            {showDetails?.start_time}
-          </div>
-          <div>
-            <span className="font-medium">End Time:</span>{" "}
-            {showDetails?.end_time}
-          </div>
-          <div>
-            <span className="font-medium">Status:</span>{" "}
-            <span className="capitalize">{showDetails?.status}</span>
-          </div>
-        </div>
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader><DialogTitle>Clinic Date Details</DialogTitle><DialogDescription>View the Clinic, Hospital, Doctor, schedule, and record dates.</DialogDescription></DialogHeader>
+        {query.isPending ? <p role="status">Loading Clinic Date details...</p> : query.isError ? <div role="alert" className="space-y-3"><p>Unable to load complete Clinic Date details.</p><Button type="button" variant="outline" size="sm" onClick={() => void query.refetch()}>Retry</Button></div> : (
+          <dl className="grid gap-3 text-sm sm:grid-cols-[auto_1fr]"><dt className="font-medium">Clinic</dt><dd>{data.clinic?.name ?? "N/A"}</dd><dt className="font-medium">Hospital</dt><dd>{data.clinic?.hospital?.name ?? "N/A"}</dd><dt className="font-medium">Doctor</dt><dd>{data.clinic?.doctor?.name ?? "N/A"}</dd><dt className="font-medium">Date</dt><dd>{formatClinicDate(data.date)}</dd><dt className="font-medium">Start Time</dt><dd>{data.start_time}</dd><dt className="font-medium">End Time</dt><dd>{data.end_time}</dd><dt className="font-medium">Status</dt><dd className="capitalize">{data.status}</dd><dt className="font-medium">Created Date</dt><dd>{data.created_at ? new Date(data.created_at).toLocaleString() : "N/A"}</dd><dt className="font-medium">Updated Date</dt><dd>{data.updated_at ? new Date(data.updated_at).toLocaleString() : "N/A"}</dd></dl>
+        )}
       </DialogContent>
     </Dialog>
   );
-});
+};

@@ -1,129 +1,71 @@
-import type { ClinicDate } from "@/services/clinic-dates";
+import type {
+  ClinicDateFormValues,
+  ClinicDateListParams,
+  ClinicDateStatus,
+  UpdateClinicDateInput,
+} from "@/services/clinic-dates";
 
 import { clinicDatesServices } from "@/services/clinic-dates";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-// Get clinic dates with pagination and filters
-export const useClinicDates = (data: {
-  pageSize: number;
-  currentPage: number;
-  search?: string;
-  clinic_id?: number;
-  status?: string;
-  future_only?: boolean;
-}) =>
+export const useClinicDates = (params: ClinicDateListParams) =>
   useQuery({
-    queryKey: ["clinic-dates", data],
-    queryFn: async () => {
-      try {
-        const clinicDates = await clinicDatesServices.getClinicDates(data);
-        return clinicDates;
-      } catch {
-        return {
-          clinicDates: [],
-          total: 0,
-          from: 0,
-          to: 0,
-          endPage: 0,
-        };
-      }
-    },
+    queryKey: ["clinic-dates", params],
+    queryFn: () => clinicDatesServices.getClinicDates(params),
+    placeholderData: keepPreviousData,
     retry: false,
     refetchOnWindowFocus: false,
   });
 
-// Get clinic date by id
-export const useClinicDateById = (id: number) =>
+export const useClinicDateById = (id: number, enabled = true) =>
   useQuery({
     queryKey: ["clinic-date", id],
-    queryFn: async () => {
-      try {
-        if (id === 0) return null;
-        const clinicDate = await clinicDatesServices.getClinicDateById(id);
-        return clinicDate;
-      } catch {
-        return null;
-      }
-    },
+    queryFn: () => clinicDatesServices.getClinicDateById(id),
+    enabled: enabled && id > 0,
     retry: false,
     refetchOnWindowFocus: false,
   });
 
-// Get clinic dates by clinic id
 export const useClinicDatesByClinic = (clinicId: number) =>
   useQuery({
     queryKey: ["clinic-dates-by-clinic", clinicId],
-    queryFn: async () => {
-      try {
-        const clinicDates =
-          await clinicDatesServices.getClinicDatesByClinic(clinicId);
-        return clinicDates;
-      } catch {
-        return [];
-      }
-    },
+    queryFn: () => clinicDatesServices.getClinicDatesByClinic(clinicId),
+    enabled: clinicId > 0,
     retry: false,
     refetchOnWindowFocus: false,
   });
 
-// Create clinic date
+const useRefreshClinicDates = () => {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: ["clinic-dates"] });
+    void queryClient.invalidateQueries({ queryKey: ["clinic-dates-by-clinic"] });
+  };
+};
+
 export const useCreateClinicDate = () => {
-  const queryClient = useQueryClient();
+  const refresh = useRefreshClinicDates();
   return useMutation({
-    mutationFn: async (data: ClinicDate) =>
+    mutationFn: (data: ClinicDateFormValues) =>
       clinicDatesServices.createClinicDate(data),
-    onSettled: () => {
-      queryClient.refetchQueries({ queryKey: ["clinic-dates"] });
-      queryClient.refetchQueries({ queryKey: ["clinic-dates-by-clinic"] });
-    },
-    onError: (error) => {
-      return error;
-    },
+    onSuccess: refresh,
   });
 };
 
-// Update clinic date
 export const useUpdateClinicDate = () => {
-  const queryClient = useQueryClient();
+  const refresh = useRefreshClinicDates();
   return useMutation({
-    mutationFn: async (data: ClinicDate) =>
+    mutationFn: (data: UpdateClinicDateInput) =>
       clinicDatesServices.updateClinicDate(data),
-    onSettled: () => {
-      queryClient.refetchQueries({ queryKey: ["clinic-dates"] });
-      queryClient.refetchQueries({ queryKey: ["clinic-dates-by-clinic"] });
-    },
-    onError: (error) => {
-      return error;
-    },
+    onSuccess: refresh,
   });
 };
 
-// Update clinic date status
 export const useUpdateClinicDateStatus = () => {
-  const queryClient = useQueryClient();
+  const refresh = useRefreshClinicDates();
   return useMutation({
-    mutationFn: clinicDatesServices.updateClinicDateStatus,
-    onSettled: () => {
-      queryClient.refetchQueries({ queryKey: ["clinic-dates"] });
-      queryClient.refetchQueries({ queryKey: ["clinic-dates-by-clinic"] });
-    },
-    onError: (error) => {
-      return error;
-    },
-  });
-};
-
-// Delete clinic date
-export const useDeleteClinicDate = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (id: number) => clinicDatesServices.deleteClinicDate(id),
-    onSettled: () => {
-      queryClient.refetchQueries({ queryKey: ["clinic-dates"] });
-      queryClient.refetchQueries({ queryKey: ["clinic-dates-by-clinic"] });
-    },
-    onError: (error) => {
-      return error;
-    },
+    mutationFn: (data: { id: number; status: ClinicDateStatus }) =>
+      clinicDatesServices.updateClinicDateStatus(data),
+    onSuccess: refresh,
   });
 };

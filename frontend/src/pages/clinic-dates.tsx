@@ -17,7 +17,7 @@ const breadcrumb = [
 export const ClinicDatesPage = () => {
   return (
     <PrivateRoute>
-      <PermissionWrapper permissions={[permissions.manageHospitals]} is404>
+      <PermissionWrapper permissions={[permissions.viewClinic]} is404>
         <Suspense fallback={<Loader />}>
           <Layout breadcrumbs={breadcrumb}>
             <ClinicDates />
